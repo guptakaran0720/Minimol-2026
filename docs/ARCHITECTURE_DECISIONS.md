@@ -163,6 +163,7 @@ How metadata is stored:
   - If only 2 hosts are alive, 3 copies on 3 different hosts is impossible. The chunk shows as **degraded**.
   - If every holder is gone, the chunk shows as **unavailable**. It is never hidden.
   - Extra copies are not deleted (garbage collection is *planned*).
+- **Scrubbing finds rot before a reader does.** Every node re-hashes its own chunks in the background (`SCRUB_PER_S`, default 8 per second, so a full pass of 1,000 chunks takes about 2 minutes). A chunk that fails is moved to `quarantine/` and leaves the node's inventory, so peers count one copy fewer and the normal repair path copies a good one back. Measured on 4 local nodes: quarantined within 1 s of the flip, good copy restored in 16–20 s. Every step appears on the dashboard's cluster timeline (`GET /events`).
 - **Verdict: CHANGE.**
 
 ## 12. Security: cluster HMAC, quotas, no remote delete
@@ -186,6 +187,7 @@ How metadata is stored:
 | Stranger answers as a peer (fake `/health`, fake `HEAD 200`) | Signed responses bound to the request signature | MVP |
 | Disk exhaustion or huge upload | Quota (507) and body caps (413) | MVP |
 | Decompression bomb | `max_output_size = 1 MiB` per chunk | MVP |
+| Silent disk corruption (bit rot, a tampered file) | Background scrub re-hashes every stored chunk; failures are quarantined and repaired from another copy | MVP |
 | Index tampering or rollback | Ed25519 signature, take the highest version across holders | MVP (rollback only reduced) |
 | Peer claims to store data it deleted | HEAD before and after every repair copy; every download re-hashes; slow-tier peers get a GET-and-hash probe every 10 s; `POST /audit` challenge | Partial; general spot checks and audit *planned* |
 | Fake free-space claims | A copy counts only after the storing peer re-hashes it and sends a signed 201 (repair also re-checks with HEAD); a failed PUT marks the peer suspect, which keeps it out of placement until its next good heartbeat. Advertised free space itself is not verified | Partial |

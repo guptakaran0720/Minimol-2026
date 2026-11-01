@@ -18,6 +18,7 @@ from collections.abc import Callable
 
 from node import config
 from node.contracts import CHUNK_SIZE, Peer
+from node.events import EventLog
 
 # Transfers smaller than this are dominated by latency, so they update rtt only.
 MIN_BW_SAMPLE_BYTES = 64 * 1024
@@ -35,9 +36,10 @@ def eta_1mib(p: Peer) -> float | None:
 class PeerTable:
     """Implements contracts.PeerTable."""
 
-    def __init__(self, me: Peer, clock: Callable[[], float] = time.monotonic):
+    def __init__(self, me: Peer, clock: Callable[[], float] = time.monotonic, events: EventLog | None = None):
         self.self_id = me.node_id
         self.clock = clock
+        self.events = events if events is not None else EventLog()   # state changes, for the timeline
         self._peers: dict[str, Peer] = {me.node_id: me}
         self._last_ok: dict[str, float] = {me.node_id: clock()}
         self._missed: dict[str, int] = {}
@@ -70,7 +72,7 @@ class PeerTable:
             return
         p.cooldown_until = self.clock() + config.FAILURE_COOLDOWN_S
         if p.state == "alive":
-            p.state = "suspect"
+            self._set_state(p, "suspect", "a transfer failed")
 
     # ---- membership ----
 
@@ -96,11 +98,12 @@ class PeerTable:
             return None
         for other in self._peers.values():         # a restarted node may come back with a new id
             if other.addr == addr and other.node_id != node_id and other.node_id != self.self_id:
-                other.state = "dead"
+                self._set_state(other, "dead", f"{addr} now answers as {node_id}")
         p = self._peers.get(node_id)
         if p is None:
             p = Peer(node_id=node_id, host_id=health["host_id"], addr=addr)
             self._peers[node_id] = p
+            self.events.add("peer_joined", node=node_id, host=health["host_id"], addr=addr)
         p.addr = addr
         p.host_id = health["host_id"]
         p.free_bytes = int(health.get("free_bytes", 0))
@@ -117,17 +120,24 @@ class PeerTable:
         self._missed[node_id] = self._missed.get(node_id, 0) + 1
         silent_for = self.clock() - self._last_ok.get(node_id, self.clock())
         if silent_for >= config.DEAD_AFTER_S:
-            p.state = "dead"
+            self._set_state(p, "dead", f"no contact for {silent_for:.0f} s")
         elif self._missed[node_id] >= config.SUSPECT_AFTER_MISSED and p.state == "alive":
-            p.state = "suspect"
+            self._set_state(p, "suspect", f"missed {self._missed[node_id]} heartbeats")
 
     def set_self_free(self, free_bytes: int) -> None:
         self.me.free_bytes = free_bytes
+        self._last_ok[self.self_id] = self.clock()   # this node is always current
 
     def _contact_ok(self, p: Peer) -> None:
         self._last_ok[p.node_id] = self.clock()
         self._missed[p.node_id] = 0
-        p.state = "alive"
+        self._set_state(p, "alive", "answered again")
+
+    def _set_state(self, p: Peer, state: str, reason: str) -> None:
+        if p.state == state:
+            return
+        previous, p.state = p.state, state
+        self.events.add(f"peer_{state}", node=p.node_id, previous=previous, reason=reason)
 
     # ---- tiers ----
 
@@ -144,11 +154,13 @@ class PeerTable:
                 since = self._slow_since.setdefault(node_id, now)
                 if p.tier == 1 and now - since >= config.SLOW_HOLD_S:
                     p.tier = 2
+                    self.events.add("peer_slow", node=node_id, eta_s=round(eta, 3), limit_s=round(limit, 3))
             else:
                 self._slow_since.pop(node_id, None)
                 since = self._fast_since.setdefault(node_id, now)
                 if p.tier == 2 and now - since >= config.SLOW_HOLD_S:
                     p.tier = 1
+                    self.events.add("peer_fast", node=node_id, eta_s=round(eta, 3), limit_s=round(limit, 3))
 
     def snapshot(self) -> list[dict]:
         """For /stats and the dashboard."""

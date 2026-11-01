@@ -497,6 +497,23 @@ input:not([type="file"]) {
   gap: 6px;
 }
 
+.timeline li {
+  border-left: 3px solid var(--border);
+  padding-left: 8px;
+}
+
+.timeline .tl-ok {
+  border-left-color: var(--ok);
+}
+
+.timeline .tl-warn {
+  border-left-color: var(--warn);
+}
+
+.timeline .tl-bad {
+  border-left-color: var(--bad);
+}
+
 @media (max-width: 900px) {
   .grid {
     grid-template-columns: minmax(0, 1fr);
