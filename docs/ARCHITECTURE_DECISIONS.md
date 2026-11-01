@@ -235,7 +235,7 @@ Partly, and we say so. None of the algorithms are new. Our contribution is:
 - routing with a measured comparison against a baseline,
 - recovery on a new device from a passphrase,
 - encrypted delta sync, our OTA experience applied to storage,
-- all of it working live on 4 laptops, with numbers.
+- all of it working live on 3 real laptops (and a 4-node Docker cluster for the routing A/B), with numbers.
 
 This is an engineering integration achievement, not an invention.
 
