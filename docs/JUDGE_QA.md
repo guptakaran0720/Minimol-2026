@@ -27,7 +27,7 @@
 | Kill a node: marked dead after | about 19.5–21.4 s |
 | Kill a node: back to 3 copies | 21.4 s in one run, 42.7 s in another ("about 20–40 s") |
 | Manual kill with 27 files stored | all 27 healed |
-| Test suite | `pytest`: 171 passed, 1 skipped (the skipped one is `tests/test_cluster.py`, which needs a running cluster) |
+| Test suite | `pytest`: 193 passed, 1 skipped (the skipped one is `tests/test_cluster.py`, which needs a running cluster) |
 | `tests/test_cluster.py` against live clusters | passed on the Docker cluster and on a local 4-process cluster |
 
 **Five golden rules**
@@ -453,11 +453,11 @@
 - **Admit:** No old-version cleanup.
 
 **Q57. How do you delete a file globally?** · *Owner: P3*
-- **Answer:** You can't today. There's no DELETE route on peers, on purpose, so a stolen cluster key can't wipe data. A user-level delete would remove the file from the owner index and let garbage collection reclaim unreferenced chunks (planned).
-- **Follow-up:** That fails GDPR-style "right to erasure".
-- **Response:** Agreed. The ciphertext without your keys is unreadable, but that isn't erasure.
-- **Show:** `node/api_peer.py` ("There is no DELETE route"); AD §12.
-- **Admit:** No delete at all, not even from your own file list.
+- **Answer:** Delete removes the file from your signed file list, then sends a delete token to every peer for each chunk and the manifest. The token is `HMAC(your KEK, object id)`, so only you can produce it, from any laptop. Peers stored only its hash at upload, and they keep a tombstone after deleting.
+- **Follow-up:** And a laptop that was off at the time?
+- **Response:** When it returns, its repair loop tries to re-copy the chunk, gets `410 Gone` plus the token, checks it against its stored hash and deletes its own copy. Measured: erased 12 s after the node restarted. The owner also retries every 15 s.
+- **Show:** `test_delete_while_a_holder_is_offline_finishes_when_it_returns`, `test_returning_holder_drops_its_copy_via_tombstone_during_repair`, `test_only_the_owner_can_delete`; AD §15.
+- **Admit:** Chunks used only by older versions wait for garbage collection (planned). A malicious peer can keep its ciphertext, so delete removes data from honest peers.
 
 **Q58. Two of my devices upload at the same time. What happens?** · *Owner: P1*
 - **Answer:** The chunks and manifests are safe because they're content-addressed. The file list is the weak spot: both devices may publish the same version number, peers keep the first, and the other device's new file may not appear when you recover elsewhere.
@@ -527,7 +527,7 @@
 ## L. Testing and benchmarks
 
 **Q67. What's your strongest evidence that it's correct?** · *Owner: P3*
-- **Answer:** `tests/test_cluster.py` runs against a real cluster: upload, check 3 distinct hosts, kill a holder, download with matching SHA-256, wait for repair, recover on another node from passphrase, kill a second original holder, download again. It passed on the Docker cluster and on a local 4-process cluster, and the full suite is 171 passed, 1 skipped.
+- **Answer:** `tests/test_cluster.py` runs against a real cluster: upload, check 3 distinct hosts, kill a holder, download with matching SHA-256, wait for repair, recover on another node from passphrase, kill a second original holder, download again. It passed on the Docker cluster and on a local 4-process cluster, and the full suite is 193 passed, 1 skipped.
 - **Follow-up:** Tests you wrote yourselves.
 - **Response:** True. That's why every download also checks the whole-file SHA-256 at runtime, so a bug shows up as an error rather than silently wrong data.
 - **Show:** `test_upload_kill_download_repair_recover`; `pytest -q` output; `scripts/docker_e2e.sh`.
@@ -731,7 +731,7 @@
 - **Admit:** We haven't modelled total cost of ownership.
 
 **Q95. Legal and compliance: is this usable for sensitive data?** · *Owner: P4*
-- **Answer:** The design helps: data never leaves the premises, and peers hold only ciphertext. But there's no delete, no audit log and no third-party review, so we wouldn't claim compliance with anything.
+- **Answer:** The design helps: data never leaves the premises, and peers hold only ciphertext. There's owner-only delete with tombstones, but no audit log and no third-party review, so we wouldn't claim compliance with anything.
 - **Follow-up:** So who can use it today?
 - **Response:** Teams experimenting, or data that isn't regulated.
 - **Show:** AD §12.
@@ -754,7 +754,7 @@
 - **Admit:** It's engineering, not research.
 
 **Q98. Isn't this a thin wrapper around zstd, AES and FastAPI?** · *Owner: P4*
-- **Answer:** The libraries do the math. The parts we wrote are the parts that break in real systems: failure detection with hysteresis, leader-elected repair that stays safe under disagreement, signed responses, rollback-resistant recovery, the bomb guard python-zstandard didn't give us, and the 171 tests that check all of it.
+- **Answer:** The libraries do the math. The parts we wrote are the parts that break in real systems: failure detection with hysteresis, leader-elected repair that stays safe under disagreement, signed responses, rollback-resistant recovery, the bomb guard python-zstandard didn't give us, and the 193 tests that check all of it.
 - **Follow-up:** Name one thing you had to figure out yourselves.
 - **Response:** python-zstandard ignores the output cap when the frame declares its size, so we check the declared size ourselves; there's a test for it.
 - **Show:** `test_decompression_bomb_rejected`; `test_racing_repairers_never_under_replicate`; `test_replayed_response_rejected`.
@@ -982,12 +982,12 @@ Format: **J** = judge, **U** = us. "Weakness" is what a sharp judge finds in our
 
 ### 15. Global delete
 - **J:** I uploaded a file by mistake. Delete it everywhere.
-- **U:** There's no delete today. Peers have no DELETE route on purpose, so a leaked cluster key can't wipe the cluster.
-- **Weakness:** Then mistakes and old versions accumulate forever.
-- **J (tougher):** Can you at least make it unreadable?
-- **Best answer:** It's already unreadable to anyone without your passphrase. We can't crypto-shred one file, though: its data key is wrapped by your account-wide key, and old manifests holding it stay on peers. A real delete removes the manifest from the signed index, then GC reclaims chunks no index references (planned).
-- **Evidence:** `node/api_peer.py` docstring; AD §11 "garbage collection is planned".
-- **Concede when:** On erasure or compliance: we don't support it.
+- **U:** Click delete. It leaves your signed file list, and every peer erases the chunks once it sees your delete token, which only your keys can derive. A leaked cluster key alone still deletes nothing.
+- **Weakness:** A peer that was offline still has a copy.
+- **J (tougher):** So it comes back when that laptop returns?
+- **Best answer:** No. The other peers keep a tombstone. The returning laptop's repair attempt is answered `410` with the token; it checks the token against its stored hash and deletes its own copy. We measured 12 s after restart. Why not leases: the owner would have to stay online to keep files alive, which defeats a system built to survive the owner being away.
+- **Evidence:** AD §15; delete tests in `tests/test_transfer.py`; the local 4-node run.
+- **Concede when:** On erasure guarantees against a malicious peer that keeps ciphertext, and on chunks only older versions used (GC planned).
 
 ### 16. Thin wrapper
 - **J:** zstd, AES-GCM, SHA-256, Ed25519, scrypt, FastAPI. What did you actually build?

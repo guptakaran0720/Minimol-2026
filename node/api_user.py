@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import mimetypes
 import os
 import tempfile
 from dataclasses import asdict, dataclass, field
@@ -39,6 +40,10 @@ from node.transfer import ChunkUnavailable, FileLocked, IntegrityError, NotEnoug
 log = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 256 * 1024 * 1024
+# Types a browser may render inline. Anything else (HTML, SVG, scripts...) previews as plain
+# text, so a stored file can never run code in the dashboard's origin.
+INLINE_SAFE = ("image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "application/pdf",
+               "audio/", "video/", "text/plain", "text/csv", "text/markdown", "application/json")
 SYNC_INTERVAL_S = 15.0
 MIN_PASSPHRASE_LEN = 12
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
@@ -110,7 +115,7 @@ async def sync_forever(transfer: Transfer, interval: float) -> None:
     while True:
         await asyncio.sleep(interval)
         try:
-            await transfer.recover()
+            await transfer.sync()
         except Exception:
             log.exception("file-list sync failed; retrying in %.0f s", interval)
 
@@ -204,10 +209,33 @@ def create_router(source) -> APIRouter:
     async def list_files(transfer: Transfer = Depends(unlocked)) -> list[dict]:
         return transfer.list_files()
 
+    @router.post("/logout")
+    async def logout(s: UserState = Depends(local)) -> dict:
+        """Lock the node: stop syncing, drop the keys from memory and delete the local
+        file-list cache. Nothing on the peers changes; unlocking again restores the list."""
+        if s.sync_task:
+            s.sync_task.cancel()
+            s.sync_task = None
+        was = s.username
+        if s.transfer is not None and s.transfer.catalog_path and not s.transfer.pending_deletes:
+            s.transfer.catalog_path.unlink(missing_ok=True)
+        s.transfer, s.username = None, None
+        return {"logged_out": was is not None, "username": was}
+
+    @router.delete("/files/{file_uuid}")
+    async def delete_file(file_uuid: str, transfer: Transfer = Depends(unlocked)) -> dict:
+        try:
+            return await transfer.delete_file(file_uuid)
+        except FileNotFoundError:
+            raise HTTPException(404, "unknown file") from None
+        except FileLocked as e:
+            raise HTTPException(403, str(e)) from e
+
     @router.get("/files/{file_uuid}")
     async def download(
         file_uuid: str,
         retrieval: Literal["eta", "random"] = "eta",            # "random" = bench.py baseline only
+        inline: bool = False,                                   # True = preview in the browser
         transfer: Transfer = Depends(unlocked),
     ) -> FileResponse:
         entry = transfer.catalog.get(file_uuid)
@@ -230,11 +258,19 @@ def create_router(source) -> APIRouter:
         except BaseException:
             os.unlink(path)
             raise
+        headers = {"X-File-SHA256": entry["sha256"], "X-Content-Type-Options": "nosniff"}
+        media_type = "application/octet-stream"
+        if inline:
+            guessed = mimetypes.guess_type(entry["name"])[0] or ""
+            media_type = guessed if guessed.startswith(INLINE_SAFE) else "text/plain; charset=utf-8"
+            if media_type != "application/pdf":   # Chrome's PDF viewer refuses a sandboxed page
+                headers["Content-Security-Policy"] = "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'"
         return FileResponse(
             path,
             filename=entry["name"],
-            media_type="application/octet-stream",
-            headers={"X-File-SHA256": entry["sha256"]},
+            media_type=media_type,
+            content_disposition_type="inline" if inline else "attachment",
+            headers=headers,
             background=BackgroundTask(os.unlink, path),
         )
 

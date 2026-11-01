@@ -216,3 +216,82 @@ def test_sync_loop_picks_up_files_uploaded_elsewhere():
 
     file_uuid = asyncio.run(scenario())
     assert file_uuid in here.catalog
+
+
+def test_logout_locks_and_forgets_the_local_list(cluster, tmp_path):
+    c = make_client(cluster, tmp_path)
+    c.post("/recover", json=LOGIN)
+    c.post("/files?name=a.txt", content=b"hello" * 100)
+    assert list((tmp_path).glob("catalog-*.json"))
+    r = c.post("/logout").json()
+    assert r == {"logged_out": True, "username": "karan"}
+    assert c.get("/files").status_code == 401 and c.get("/stats").json()["unlocked"] is False
+    assert not list((tmp_path).glob("catalog-*.json"))
+    assert c.post("/recover", json=LOGIN).json()["files_restored"] == 1   # nothing lost on the peers
+
+
+def test_delete_route(cluster, tmp_path):
+    net = cluster[0]
+    c = make_client(cluster, tmp_path)
+    c.post("/recover", json=LOGIN)
+    file_uuid = c.post("/files?name=gone.bin", content=os.urandom(3000)).json()["file_uuid"]
+    r = c.delete(f"/files/{file_uuid}")
+    assert r.status_code == 200 and r.json()["pending_objects"] == 0 and r.json()["copies_deleted"] >= 3
+    assert c.get("/files").json() == []
+    assert c.delete(f"/files/{file_uuid}").status_code == 404
+    assert sum(len(s) for s in net.stores.values()) == 0
+
+
+def test_preview_is_inline_and_safe(cluster, tmp_path):
+    c = make_client(cluster, tmp_path)
+    c.post("/recover", json=LOGIN)
+    ids = {n: c.post(f"/files?name={n}", content=b"<script>alert(1)</script>" if n.endswith(".html") else b"%PDF-1.4 x").json()["file_uuid"]
+           for n in ("page.html", "doc.pdf")}
+    html = c.get(f"/files/{ids['page.html']}?inline=true")
+    assert html.headers["content-type"].startswith("text/plain")
+    assert "sandbox" in html.headers["content-security-policy"]
+    assert html.headers["content-disposition"].startswith("inline")
+    assert html.headers["x-content-type-options"] == "nosniff"
+    pdf = c.get(f"/files/{ids['doc.pdf']}?inline=true")
+    assert pdf.headers["content-type"] == "application/pdf" and "content-security-policy" not in pdf.headers
+    plain = c.get(f"/files/{ids['doc.pdf']}")
+    assert plain.headers["content-disposition"].startswith("attachment")
+
+
+def test_locked_file_is_refused_on_another_device_for_download_preview_and_delete(tmp_path):
+    """The user API answers 403 on a device whose MAC isn't the one the file is locked to."""
+    import asyncio as _asyncio
+
+    import httpx as _httpx
+    from fastapi import FastAPI as _FastAPI
+
+    from node.api_user import UserState, create_router
+    from tests.fakes import make_cluster as _make_cluster
+
+    net, table, client, locs, codec = _make_cluster(4)
+
+    def device(mac, sub):
+        state = UserState(codec=codec, peers=table, client=client, locations=locs,
+                          data_dir=tmp_path / sub, chunk_size=1024, device_mac=mac)
+        app = _FastAPI()
+        app.include_router(create_router(state))
+        return _httpx.AsyncClient(transport=_httpx.ASGITransport(app=app, client=("127.0.0.1", 1)), base_url="http://x")
+
+    login = {"username": "team", "passphrase": "team passphrase 1"}
+
+    async def go():
+        a, b = device("aa:bb:cc:dd:ee:01", "a"), device("aa:bb:cc:dd:ee:02", "b")
+        assert (await a.post("/recover", json=login)).status_code == 200
+        up = await a.post("/files", params={"name": "locked.txt", "lock": "true"}, content=b"private" * 100)
+        assert up.status_code == 201
+        uuid = up.json()["file_uuid"]
+        assert (await a.get(f"/files/{uuid}")).status_code == 200
+        assert (await b.post("/recover", json=login)).status_code == 200
+        [f] = (await b.get("/files")).json()
+        assert f["lock_mac"] == "aa:bb:cc:dd:ee:01" and f["locked_here"] is False
+        assert (await b.get(f"/files/{uuid}")).status_code == 403
+        assert (await b.get(f"/files/{uuid}", params={"inline": "true"})).status_code == 403
+        assert (await b.delete(f"/files/{uuid}")).status_code == 403
+        again = await b.post("/files", params={"name": "locked.txt"}, content=b"overwrite")
+        assert again.status_code == 403
+    _asyncio.run(go())

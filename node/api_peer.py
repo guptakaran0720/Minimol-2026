@@ -3,7 +3,9 @@
 Every route needs a valid cluster HMAC, and every answer to an authenticated
 request is signed back (X-Node, X-Resp-Sig), so a stranger on the Wi-Fi can't
 pose as a node. Request bodies are capped while they stream in, so an oversized
-upload is rejected before it is fully read. There is no DELETE route.
+upload is rejected before it is fully read. DELETE /chunks/{id} only succeeds with
+the owner's delete token (sha256(token) must equal the hash stored with the chunk),
+which travels in the signed body; the hash itself travels in the signed path.
 """
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ from starlette.concurrency import run_in_threadpool
 from node import auth, config
 from node.chunkstore import DiskChunkStore, IndexStore, is_hex64
 from node.config import Settings
-from node.contracts import HashMismatch, QuotaExceeded
+from node.contracts import ChunkDeleted, HashMismatch, QuotaExceeded
 from node.peers import PeerTable
 
 # verify_index(record, owner_pub) -> version; raises if the signature is bad (P1, node/index.py)
@@ -151,16 +153,38 @@ def create_peer_app(
         return [{"node_id": p.node_id, "host_id": p.host_id, "addr": p.addr}
                 for p in peers.all() if p.state != "dead"]
 
-    @app.put("/chunks/{chunk_id}")
-    async def put_chunk(chunk_id: str, caller: Caller = chunk_body):
+    async def store_chunk(chunk_id: str, body: bytes, delete_hash: str | None):
         check_id(chunk_id, "chunk_id")
+        if delete_hash is not None:
+            check_id(delete_hash, "delete_hash")
         try:
-            new = await run_in_threadpool(store.put, chunk_id, caller.body)
+            new = await run_in_threadpool(store.put, chunk_id, body, delete_hash)
         except HashMismatch:
             raise HTTPException(400, "sha256(body) does not match chunk_id") from None
         except QuotaExceeded as e:
             raise HTTPException(507, f"quota full: {e}") from None
+        except ChunkDeleted as e:
+            return JSONResponse({"chunk_id": chunk_id, "deleted": True, "token": e.token}, status_code=410)
         return JSONResponse({"chunk_id": chunk_id, "new": new}, status_code=201 if new else 200)
+
+    @app.put("/chunks/{chunk_id}")
+    async def put_chunk(chunk_id: str, caller: Caller = chunk_body):
+        return await store_chunk(chunk_id, caller.body, None)
+
+    @app.put("/chunks/{chunk_id}/{delete_hash}")
+    async def put_owned_chunk(chunk_id: str, delete_hash: str, caller: Caller = chunk_body):
+        return await store_chunk(chunk_id, caller.body, delete_hash)
+
+    @app.delete("/chunks/{chunk_id}")
+    async def delete_chunk(chunk_id: str, caller: Caller = Depends(authed(256))):
+        check_id(chunk_id, "chunk_id")
+        try:
+            token = json.loads(caller.body)["token"]
+        except (ValueError, KeyError, TypeError):
+            raise HTTPException(400, 'body must be {"token": "<64 hex>"}') from None
+        result = await run_in_threadpool(store.delete, chunk_id, str(token))
+        status = {"deleted": 200, "absent": 404, "forbidden": 403, "unprotected": 409}[result]
+        return JSONResponse({"chunk_id": chunk_id, "result": result}, status_code=status)
 
     @app.get("/chunks/{chunk_id}")
     async def get_chunk(chunk_id: str, _: Caller = no_body):

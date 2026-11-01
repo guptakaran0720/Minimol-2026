@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -91,6 +92,7 @@ class Transfer:
         self.hedges_fired = 0
         self.unrecovered: list[str] = []      # manifest ids the last recover() could not fetch
         self.last_index_acks = 0              # peers that accepted the last published owner index
+        self.pending_deletes: set[str] = set()  # deleted object ids some holder still had (offline then)
         self.keys = keys
         self.codec = codec
         self.peers = peers
@@ -237,7 +239,7 @@ class Transfer:
     async def _put(self, peer: Peer, object_id: str, blob: bytes) -> bool:
         started = time.monotonic()
         try:
-            ok = await self.client.put_chunk(peer, object_id, blob)
+            ok = await self.client.put_chunk(peer, object_id, blob, self.delete_hash(object_id))
         except Exception:
             ok = False
         if ok:
@@ -406,7 +408,17 @@ class Transfer:
         self.unrecovered = [mid for mid, m in zip(to_load, loaded) if not isinstance(m, Manifest)]
         restored = [(mid, m) for mid, m in zip(to_load, loaded) if isinstance(m, Manifest)]
         async with self._catalog_lock:
+            newer = best_version > self.index_version
             self.index_version = max(self.index_version, best_version)
+            if newer and not self.unrecovered:
+                # A newer list than ours is the truth: drop files it no longer has (deleted on
+                # another laptop). Skipped while a manifest is unreachable, so a file is never
+                # dropped just because its newest manifest couldn't be fetched yet.
+                listed = set(manifest_ids)
+                keep = {e["file_uuid"] for e in self.catalog.values() if e["manifest_id"] in listed}
+                keep |= {m.file_uuid for _, m in restored}
+                for gone in [u for u in self.catalog if u not in keep]:
+                    del self.catalog[gone]
             for mid, m in restored:
                 current = self.catalog.get(m.file_uuid)
                 if current and current["version"] > m.version:
@@ -424,6 +436,76 @@ class Transfer:
             self._save_catalog()
             have = {e["manifest_id"] for e in self.catalog.values()}
         return sum(mid in have for mid in manifest_ids)
+
+    # ---------- delete ----------
+
+    def delete_token(self, object_id: str) -> str:
+        """Secret that authorises deleting one stored object. Derived from the owner's KEK,
+        so any laptop unlocked by the owner can recompute it and nobody else can."""
+        return hmac.new(self.keys.kek, b"minimol-2026/delete/v1|" + object_id.encode(), hashlib.sha256).hexdigest()
+
+    def delete_hash(self, object_id: str) -> str:
+        """What peers store with the object: sha256(token). Revealing it doesn't let anyone delete."""
+        return hashlib.sha256(bytes.fromhex(self.delete_token(object_id))).hexdigest()
+
+    async def delete_file(self, file_uuid: str) -> dict:
+        """Remove a file from the owner's list, then delete its chunks and manifest from every
+        peer. Holders that are offline now are retried by sync(); and if one returns while we
+        are gone, its repair attempt meets a tombstone and it deletes its own copy."""
+        await self.recover()                   # never publish a list older than the peers' one
+        if file_uuid in self.catalog and not self.may_access(file_uuid):
+            raise FileLocked(f"locked to device {self.catalog[file_uuid]['lock_mac']}; only that device can delete it")
+        async with self._catalog_lock:
+            entry = self.catalog.pop(file_uuid, None)
+            if entry is None:
+                raise FileNotFoundError(file_uuid)
+            index_acks = await self._publish_index()
+            still_used = {o for e in self.catalog.values() for o in (*e["chunk_ids"], e["manifest_id"])}
+        objects = [o for o in dict.fromkeys((*entry["chunk_ids"], entry["manifest_id"])) if o not in still_used]
+        results = await asyncio.gather(*(self._delete_everywhere(o) for o in objects))
+        self.pending_deletes |= {o for o, (_, pending) in zip(objects, results) if pending}
+        self._save_catalog()
+        return {
+            "file_uuid": file_uuid,
+            "name": entry["name"],
+            "objects": len(objects),
+            "copies_deleted": sum(deleted for deleted, _ in results),
+            "pending_objects": sum(1 for _, pending in results if pending),
+            "index_acks": index_acks,
+        }
+
+    async def _delete_everywhere(self, object_id: str) -> tuple[int, bool]:
+        """Send the delete token to every alive peer. Returns (copies deleted, still pending):
+        pending when a peer that holds or held the object didn't confirm."""
+        token = self.delete_token(object_id)
+        alive = self.peers.alive()
+
+        async def one(p: Peer) -> str:
+            try:
+                return await self.client.delete_chunk(p, object_id, token)
+            except Exception:
+                return "unreachable"
+
+        answers = dict(zip((p.node_id for p in alive), await asyncio.gather(*(one(p) for p in alive))))
+        confirmed = {n for n, a in answers.items() if a in ("deleted", "absent")}
+        pending = bool(self.locations.holders(object_id) - confirmed)
+        return sum(a == "deleted" for a in answers.values()), pending
+
+    async def retry_pending_deletes(self) -> int:
+        """Finish deletes on holders that were offline. Returns how many objects are still pending."""
+        for object_id in list(self.pending_deletes):
+            _, pending = await self._delete_everywhere(object_id)
+            if not pending:
+                self.pending_deletes.discard(object_id)
+        self._save_catalog()
+        return len(self.pending_deletes)
+
+    async def sync(self) -> int:
+        """What the 15 s loop runs: pull the newest file list, then retry unfinished deletes."""
+        restored = await self.recover()
+        if self.pending_deletes:
+            await self.retry_pending_deletes()
+        return restored
 
     # ---------- health views for the dashboard ----------
 
@@ -479,11 +561,13 @@ class Transfer:
             saved = json.loads(self.catalog_path.read_text())
             self.catalog = saved["catalog"]
             self.index_version = saved["index_version"]
+            self.pending_deletes = set(saved.get("pending_deletes", []))
 
     def _save_catalog(self) -> None:
         if self.catalog_path:
             tmp = self.catalog_path.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"catalog": self.catalog, "index_version": self.index_version}))
+            tmp.write_text(json.dumps({"catalog": self.catalog, "index_version": self.index_version,
+                                       "pending_deletes": sorted(self.pending_deletes)}))
             tmp.replace(self.catalog_path)
 
 

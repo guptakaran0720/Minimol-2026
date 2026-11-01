@@ -1377,3 +1377,120 @@ tr:last-child td {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* ---------- file actions + preview ---------- */
+
+.icon-btn {
+  border: 0;
+  cursor: pointer;
+}
+
+.icon-btn-danger {
+  background: color-mix(in srgb, var(--red) 14%, transparent);
+  color: var(--red);
+}
+
+.icon-btn-danger:hover {
+  background: var(--red);
+  color: #ffffff;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: rgba(17, 19, 22, 0.72);
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  width: min(1100px, 100%);
+  max-height: calc(100vh - 48px);
+  border-radius: 28px;
+  background: var(--card);
+  color: var(--text);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 20px 14px 24px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.modal-title {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.modal-title h2 {
+  overflow: hidden;
+  margin: 0;
+  font-size: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal-head .btn-quiet {
+  text-decoration: none;
+}
+
+.modal-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 240px;
+  padding: 20px;
+  overflow: auto;
+  background: var(--soft);
+}
+
+.preview-media {
+  margin: auto 0;   /* centred vertically without clipping tall content */
+  max-width: 100%;
+  max-height: 72vh;
+  border-radius: 16px;
+}
+
+.preview-frame {
+  width: 100%;
+  height: 72vh;
+  border: 0;
+  border-radius: 16px;
+  background: #ffffff;
+}
+
+.preview-text {
+  align-self: stretch;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--card);
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .files li {
+    flex-wrap: wrap;
+  }
+  .modal-head {
+    flex-wrap: wrap;
+  }
+}

@@ -9,7 +9,7 @@ import hashlib
 import json
 import time
 
-from node.contracts import EncodedChunk, Manifest, MasterKeys, Peer
+from node.contracts import ChunkDeleted, EncodedChunk, Manifest, MasterKeys, Peer
 
 GB = 1024**3
 
@@ -72,10 +72,38 @@ class FakeNetwork:
         self.corrupt: set[str] = set()   # these nodes return garbage on GET
         self.full: set[str] = set()      # these nodes reject PUT
         self.puts = 0
+        self.delhash: dict[str, dict[str, str]] = {}   # node -> chunk -> sha256(token)
+        self.tombs: dict[str, dict[str, str]] = {}     # node -> chunk -> revealed token
 
     def add_node(self, node_id):
         self.stores.setdefault(node_id, {})
         self.indexes.setdefault(node_id, {})
+        self.delhash.setdefault(node_id, {})
+        self.tombs.setdefault(node_id, {})
+
+    def store(self, node, chunk_id, blob, delete_hash=None):
+        """Same rules as DiskChunkStore.put."""
+        if chunk_id in self.tombs[node]:
+            raise ChunkDeleted(chunk_id, self.tombs[node][chunk_id])
+        if delete_hash:
+            self.delhash[node].setdefault(chunk_id, delete_hash)
+        new = chunk_id not in self.stores[node]
+        self.stores[node][chunk_id] = blob
+        return new
+
+    def delete(self, node, chunk_id, token):
+        """Same rules as DiskChunkStore.delete."""
+        if chunk_id in self.tombs[node]:
+            return "deleted" if self.tombs[node][chunk_id] == token else "forbidden"
+        expected = self.delhash[node].get(chunk_id)
+        if expected is None:
+            return "absent" if chunk_id not in self.stores[node] else "unprotected"
+        if hashlib.sha256(bytes.fromhex(token)).hexdigest() != expected:
+            return "forbidden"
+        self.tombs[node][chunk_id] = token
+        self.stores[node].pop(chunk_id, None)
+        self.delhash[node].pop(chunk_id, None)
+        return "deleted"
 
 
 class FakePeerTable:
@@ -115,13 +143,17 @@ class FakeClient:
         if peer.node_id in self.net.down:
             raise ConnectionError(f"{peer.node_id} unreachable")
 
-    async def put_chunk(self, peer, chunk_id, blob):
+    async def put_chunk(self, peer, chunk_id, blob, delete_hash=None):
         self._check(peer)
         if peer.node_id in self.net.full or sha(blob) != chunk_id:
             return False
+        self.net.store(peer.node_id, chunk_id, blob, delete_hash)
         self.net.puts += 1
-        self.net.stores[peer.node_id][chunk_id] = blob
         return True
+
+    async def delete_chunk(self, peer, chunk_id, token):
+        self._check(peer)
+        return self.net.delete(peer.node_id, chunk_id, token)
 
     async def get_chunk(self, peer, chunk_id):
         self._check(peer)
@@ -189,10 +221,14 @@ class FakeStore:
     def _s(self):
         return self.net.stores[self.node_id]
 
-    def put(self, chunk_id, blob):
-        new = chunk_id not in self._s()
-        self._s()[chunk_id] = blob
-        return new
+    def put(self, chunk_id, blob, delete_hash=None):
+        return self.net.store(self.node_id, chunk_id, blob, delete_hash)
+
+    def delete_hash(self, chunk_id):
+        return self.net.delhash[self.node_id].get(chunk_id)
+
+    def delete(self, chunk_id, token):
+        return self.net.delete(self.node_id, chunk_id, token)
 
     def get(self, chunk_id):
         return self._s().get(chunk_id)

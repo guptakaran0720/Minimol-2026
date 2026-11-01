@@ -19,7 +19,7 @@ export interface Peer {
 
 export interface RepairEvent {
   t: number;
-  kind: "copied" | "corrupt_local";
+  kind: "copied" | "corrupt_local" | "deleted";
   chunk: string;
   to?: string;
 }
@@ -174,6 +174,12 @@ export const api = {
       body: file,
     }),
   downloadUrl: (uuid: string) => `/files/${uuid}`,
+  previewUrl: (uuid: string) => `/files/${uuid}?inline=true`,
+  logout: () => call<{ logged_out: boolean; username: string | null }>("/logout", { method: "POST" }),
+  deleteFile: (uuid: string) =>
+    call<{ name: string; objects: number; copies_deleted: number; pending_objects: number }>(`/files/${uuid}`, {
+      method: "DELETE",
+    }),
 };
 
 export function formatBytes(n: number): string {

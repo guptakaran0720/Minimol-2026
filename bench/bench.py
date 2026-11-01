@@ -143,9 +143,9 @@ class SimBackend:
                 link_rtt, link_bw = self.links[peer.node_id]
                 await asyncio.sleep(link_rtt + nbytes / link_bw)
 
-            async def put_chunk(self, peer, chunk_id, blob):
+            async def put_chunk(self, peer, chunk_id, blob, delete_hash=None):
                 await self._wait(peer, len(blob))
-                return await super().put_chunk(peer, chunk_id, blob)
+                return await super().put_chunk(peer, chunk_id, blob, delete_hash)
 
             async def get_chunk(self, peer, chunk_id):
                 blob = await super().get_chunk(peer, chunk_id)

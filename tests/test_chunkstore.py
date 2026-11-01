@@ -116,3 +116,40 @@ def test_has_drops_a_vanished_file_and_audit_proof(tmp_path):
     assert s.audit_proof(cid(b"other"), nonce) is None
     (tmp_path / "chunks" / cid(b"keep")[:2] / cid(b"keep")).unlink()
     assert s.has(cid(b"keep")) is False and s.list_ids() == [] and s.used_bytes() == 0
+
+
+def token_pair(seed: bytes = b"t"):
+    token = hashlib.sha256(seed).hexdigest()
+    return token, hashlib.sha256(bytes.fromhex(token)).hexdigest()
+
+
+def test_delete_needs_the_owner_token_and_leaves_a_tombstone(tmp_path):
+    from node.contracts import ChunkDeleted
+    s = DiskChunkStore(tmp_path, quota_bytes=1024)
+    token, dhash = token_pair()
+    blob = b"owned chunk"
+    s.put(cid(blob), blob, dhash)
+    assert s.delete_hash(cid(blob)) == dhash
+    assert s.delete(cid(blob), token_pair(b"wrong")[0]) == "forbidden"
+    assert s.has(cid(blob))
+    assert s.delete(cid(blob), token) == "deleted"
+    assert not s.has(cid(blob)) and s.used_bytes() == 0 and s.list_ids() == []
+    assert s.delete(cid(blob), token) == "deleted"              # idempotent
+    with pytest.raises(ChunkDeleted) as gone:                   # a repair copy can't resurrect it
+        s.put(cid(blob), blob, dhash)
+    assert gone.value.token == token
+    reopened = DiskChunkStore(tmp_path, quota_bytes=1024)      # tombstone survives a restart
+    assert reopened.tombstone(cid(blob)) == token
+    with pytest.raises(ChunkDeleted):
+        reopened.put(cid(blob), blob)
+
+
+def test_unprotected_and_absent_chunks_cannot_be_deleted(tmp_path):
+    s = DiskChunkStore(tmp_path, quota_bytes=1024)
+    blob = b"legacy chunk, stored without a delete hash"
+    s.put(cid(blob), blob)
+    token, _ = token_pair()
+    assert s.delete(cid(blob), token) == "unprotected"
+    assert s.has(cid(blob))
+    assert s.delete(cid(b"never stored"), token) == "absent"
+    assert s.delete(cid(blob), "not-hex") == "forbidden"

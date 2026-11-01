@@ -78,7 +78,7 @@ def test_status_codes(tmp_path):
         big = b"q" * (config.CHUNK_BODY_MAX + 1)
         assert (await raw(client, "PUT", f"/chunks/{cid(big)}", big)).status_code == 413
         r = await client.http.delete(f"http://peer-a:8000/chunks/{cid(blob)}")
-        assert r.status_code == 405                                                           # no DELETE
+        assert r.status_code == 401                                   # DELETE exists but needs a signed request + owner token
     run(go())
 
 
@@ -246,3 +246,25 @@ def test_distrusted_copy_is_not_believed(tmp_path):
     assert run(client.head_chunk(peer, cid(blob))) is True
     client.is_distrusted = lambda chunk_id, node_id: node_id == "node-a"
     assert run(client.head_chunk(peer, cid(blob))) is False     # repair places a real copy elsewhere
+
+
+def test_owner_delete_over_the_wire(tmp_path):
+    from node.contracts import ChunkDeleted
+    store, _, client, peer = make(tmp_path)
+    blob = b"y" * 500
+    token = hashlib.sha256(b"owner secret").hexdigest()
+    dhash = hashlib.sha256(bytes.fromhex(token)).hexdigest()
+
+    async def go():
+        assert await client.put_chunk(peer, cid(blob), blob, dhash) is True
+        assert store.delete_hash(cid(blob)) == dhash
+        assert await client.delete_chunk(peer, cid(blob), hashlib.sha256(b"guess").hexdigest()) == "forbidden"
+        assert await client.head_chunk(peer, cid(blob)) is True
+        assert await client.delete_chunk(peer, cid(blob), token) == "deleted"
+        assert await client.head_chunk(peer, cid(blob)) is False
+        assert cid(blob) not in await client.get_inventory(peer)
+        with pytest.raises(ChunkDeleted) as gone:            # 410 reveals the token to a returning holder
+            await client.put_chunk(peer, cid(blob), blob, dhash)
+        assert gone.value.token == token
+        assert await client.delete_chunk(peer, cid(b"nope"), token) == "absent"
+    run(go())

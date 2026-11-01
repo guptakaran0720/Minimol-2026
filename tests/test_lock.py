@@ -93,3 +93,15 @@ def test_real_manifest_carries_the_lock_sealed_and_authenticated():
     assert b"lock_mac" not in _to_json(manifest())      # unlocked manifests keep their exact old format
     with pytest.raises(ManifestError):
         seal_manifest(manifest("not-a-mac"), kek)
+
+
+def test_other_device_cannot_delete_a_locked_file_but_the_owner_can():
+    a, b = laptops()
+    r = run(a.upload(io.BytesIO(b"keep me" * 200), "keep.txt", lock=True))
+    run(b.recover())
+    with pytest.raises(FileLocked):
+        run(b.delete_file(r.file_uuid))
+    run(a.recover())
+    assert [f["name"] for f in a.list_files()] == ["keep.txt"]
+    run(a.delete_file(r.file_uuid))
+    assert a.list_files() == []

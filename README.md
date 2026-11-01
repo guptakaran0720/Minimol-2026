@@ -12,7 +12,7 @@ Files are **compressed and encrypted on your machine** before they leave it. Eac
 | **Routing** | **0%** of copies placed on a slow node (random baseline: 21.7%); downloads **11.6×** faster than picking a random holder |
 | **Delta sync** | **0.85%** of a file sent to re-upload after a 1% edit |
 | **Self-healing** | dead laptop detected in **~20 s**; missing copies refilled **6 s** after it rejoined; an empty replacement laptop refilled in **~19 s** |
-| **Correctness** | **181 automated tests**, plus a live cluster test; **every self-test passed on 3 real laptops** |
+| **Correctness** | **193 automated tests**, plus a live cluster test; **every self-test passed on 3 real laptops** |
 
 > All numbers are measured, never estimated. Conditions are stated next to each one, and the full method is in [docs/RESULTS.md](docs/RESULTS.md).
 
@@ -22,7 +22,7 @@ Files are **compressed and encrypted on your machine** before they leave it. Eac
 |---|---|---|
 | 1. Architectural depth & systems rigor | 30 | [Architecture](#1-architecture-and-systems-rigor): system, node, data flows, metadata and key hierarchy, consistency model, decisions with counter-arguments |
 | 2. Core constraint mastery (no AI shortcuts) | 25 | [Core algorithms we built](#2-core-constraints-built-from-first-principles): every algorithm, its formula and the file and line that implements it |
-| 3. Edge-case resilience & robustness | 20 | [Failure handling](#3-edge-case-resilience): failure detector, repair protocol, integrity layers, a 26-row edge-case matrix tied to tests, threat model |
+| 3. Edge-case resilience & robustness | 20 | [Failure handling](#3-edge-case-resilience): failure detector, repair protocol, integrity layers, a 30-row edge-case matrix tied to tests, threat model |
 | 4. Quantitative performance & optimization | 15 | [Measured results](#4-measured-performance): five charts, three test environments, A/B against baselines, reproduction commands |
 | 5. UX polish & demonstration quality | 10 | [Dashboard and demo](#5-dashboard-and-demonstration): live dashboard, cluster timeline, 5-minute demo with fallbacks |
 
@@ -226,6 +226,7 @@ Every choice was attacked before it was kept. The full reasoning is in [docs/ARC
 | Recovery | Passphrase-derived keys + signed index | `scrypt(pw, SHA-256(user))` → HKDF → KEK, Ed25519 | [`keys.py:62`](node/keys.py#L62), [`index.py:51`](node/index.py#L51) |
 | Peer auth | HMAC request and response signing | `HMAC(key, method‖path‖node‖ts‖H(body))`, ±30 s | [`auth.py:23`](node/auth.py#L23) |
 | Delta sync | Deterministic encryption per file | same name → same DEK → unchanged chunk → same ID → skip | [`transfer.py:105`](node/transfer.py#L105) |
+| Owner-only delete | Derived delete tokens + tombstones | `token = HMAC(KEK, "delete"‖id)`, peer stores `SHA-256(token)`; 410 + token tells a returning holder | [`transfer.py`](node/transfer.py) `delete_file`, [`chunkstore.py`](node/chunkstore.py) `delete` |
 
 **Proof the algorithms behave as claimed** (from [`tests/test_routing.py`](tests/test_routing.py)):
 - `test_weight_controls_first_choice_share`: weights 1:3 give the heavy peer 75% ± 4% of first choices over 4,000 chunks.
@@ -315,6 +316,10 @@ flowchart LR
 | 24 | Upload from another laptop | Appears here within 15 s | `test_sync_loop_picks_up_files_uploaded_elsewhere`; Docker 15.1 s |
 | 25 | Outsider without the cluster key | Every request and response rejected; never joins | `test_hmac_rejection`, `test_unsigned_or_impostor_responses_rejected`; laptops 3/3 |
 | 26 | Replayed request / response | Outside ±30 s or wrong signature → rejected | `test_timestamp_window`, `test_replayed_response_rejected` |
+| 27 | Someone else tries to delete your file | Their token doesn't match the stored hash → 403, nothing deleted | `test_only_the_owner_can_delete`, `test_owner_delete_over_the_wire` |
+| 28 | A holder is offline during a delete | Owner retries every 15 s; peers keep tombstones, so the returning holder's repair learns of the delete and erases its copy (measured: 12 s after restart) | `test_delete_while_a_holder_is_offline_finishes_when_it_returns`, `test_returning_holder_drops_its_copy_via_tombstone_during_repair` |
+| 29 | File deleted on another laptop | Dropped from this laptop's list at the next sync | `test_other_laptop_drops_a_file_deleted_elsewhere` |
+| 30 | Previewing a stored HTML/SVG file | Served as plain text inside a CSP sandbox, so it can't run code in the dashboard | `test_preview_is_inline_and_safe` |
 
 ### 3.5 Threat model (summary)
 
@@ -323,6 +328,7 @@ flowchart LR
 | Peer reads your data | Client-side AES-256-GCM; peers hold ciphertext; names and hashes only inside sealed manifests | Done |
 | Peer tampers with data | Five integrity checks (§3.3) | Done |
 | Fake node joins | HMAC on every request and response | Done (closed membership) |
+| Unauthorized delete | Owner-derived delete tokens; peers store only the token's hash | Done |
 | Disk exhaustion / huge upload | Quotas (507), body caps (413), 256 MiB upload limit | Done |
 | Peer lies about storing a chunk | Inventory + HEAD at repair + slow-tier probes + local scrub | Partial; challenge audits planned |
 | Traffic sniffing | Payloads already encrypted; mutual TLS planned | Partial |
@@ -372,7 +378,7 @@ Check that the benchmark script itself works (simulated, not a measurement):
 ```bash
 .venv/bin/python -m bench.bench --sim
 ```
-Run the 181 tests:
+Run the 193 tests:
 ```bash
 .venv/bin/python -m pytest -q
 ```
@@ -389,7 +395,8 @@ Every node serves a React dashboard at `http://localhost:8000/ui/`, polling ever
 - **Peers:** live state, slow tier, RTT, bandwidth, free space.
 - **Unlock and recover:** shows what an unlock found, and warns on a likely typo.
 - **Upload card:** compression, sent vs reused chunks, durable or degraded.
-- **File list:** health badges, and downloads verified by SHA-256.
+- **File list:** health badges; **preview** (images, PDF, text, audio, video) and downloads verified by SHA-256; **delete** from every laptop.
+- **Log out:** drops the keys from this laptop and locks the dashboard; files stay on the peers.
 - **Chunk map:** which laptop holds each piece.
 - **Self-repair panel**, and a **live cluster timeline** (peer joins, suspects, deaths, scrub quarantines, repair copies).
 
@@ -468,7 +475,7 @@ node/        pipeline, keys, manifest, index (P1) · chunkstore, peers, api_peer
              routing, transfer, repair, api_user (P3) · main.py wires a node together
 ui/          React dashboard (Vite + TypeScript)
 bench/       live and simulated benchmarks with A/B baselines
-tests/       181 unit tests, in-memory fakes, live cluster test
+tests/       193 unit tests, in-memory fakes, live cluster test
 scripts/     run_cluster.sh, docker_e2e.sh
 docs/        decisions, explanations, results, Q&A, demo, deck, charts
 ```
@@ -479,7 +486,7 @@ docs/        decisions, explanations, results, Q&A, demo, deck, charts
 |---|---|
 | One network, or a mesh VPN | Kademlia DHT + relays for direct internet use |
 | 3 full copies (0.90× after compression, 3× for incompressible data) | Erasure coding with zfec at 8+ nodes |
-| Extra copies are never deleted | Garbage collection of unreferenced chunks |
+| Chunks used only by older versions linger after a delete | Garbage collection of unreferenced chunks |
 | Peer links signed, not encrypted (the data is) | Per-node identities with mutual TLS |
 | Inserting bytes breaks delta sync | Content-defined chunking (FastCDC) |
 | One writer per owner at a time | Mergeable (CRDT) file list |

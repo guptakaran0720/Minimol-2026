@@ -20,7 +20,7 @@ from collections.abc import Callable
 import httpx
 
 from node import auth, config
-from node.contracts import Peer
+from node.contracts import ChunkDeleted, Peer
 
 
 class HttpPeerClient:
@@ -78,12 +78,15 @@ class HttpPeerClient:
         if self.on_transfer is not None:
             self.on_transfer(direction, peer, chunk_id, nbytes, time.monotonic() - started)
 
-    async def put_chunk(self, peer: Peer, chunk_id: str, blob: bytes) -> bool:
+    async def put_chunk(self, peer: Peer, chunk_id: str, blob: bytes, delete_hash: str | None = None) -> bool:
         started = time.monotonic()
-        r = await self._request(peer, "PUT", f"/chunks/{chunk_id}", blob, "application/octet-stream")
+        path = f"/chunks/{chunk_id}/{delete_hash}" if delete_hash else f"/chunks/{chunk_id}"
+        r = await self._request(peer, "PUT", path, blob, "application/octet-stream")
         if r.status_code in (200, 201):
             self._moved("upload", peer, chunk_id, len(blob), started)
             return True
+        if r.status_code == 410:               # the owner deleted it; the body reveals the token
+            raise ChunkDeleted(chunk_id, str(r.json().get("token", "")))
         if r.status_code in (400, 413, 507):   # hash mismatch, too big, quota full
             return False
         raise self._unexpected(r)
@@ -137,6 +140,14 @@ class HttpPeerClient:
             return r.json()
         if r.status_code == 404:
             return None
+        raise self._unexpected(r)
+
+    async def delete_chunk(self, peer: Peer, chunk_id: str, token: str) -> str:
+        body = json.dumps({"token": token}).encode("utf-8")
+        r = await self._request(peer, "DELETE", f"/chunks/{chunk_id}", body, "application/json")
+        results = {200: "deleted", 404: "absent", 403: "forbidden", 409: "unprotected"}
+        if r.status_code in results:
+            return results[r.status_code]
         raise self._unexpected(r)
 
     # ---- membership (used by peers.py and discovery.py) ----

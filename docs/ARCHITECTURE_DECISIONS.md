@@ -166,7 +166,7 @@ How metadata is stored:
 - **Scrubbing finds rot before a reader does.** Every node re-hashes its own chunks in the background (`SCRUB_PER_S`, default 8 per second, so a full pass of 1,000 chunks takes about 2 minutes). A chunk that fails is moved to `quarantine/` and leaves the node's inventory, so peers count one copy fewer and the normal repair path copies a good one back. Measured on 4 local nodes: quarantined within 1 s of the flip, good copy restored in 16–20 s. Every step appears on the dashboard's cluster timeline (`GET /events`).
 - **Verdict: CHANGE.**
 
-## 12. Security: cluster HMAC, quotas, no remote delete
+## 12. Security: cluster HMAC, quotas, owner-only delete
 
 - **Counter to the original:** With no authentication, anyone on the Wi-Fi can fill peers' disks or poison the peer table.
 - **New design:**
@@ -174,7 +174,7 @@ How metadata is stored:
   - Every answer to an authenticated request is signed back: `X-Resp-Sig = HMAC-SHA256(cluster_key, RESPONSE|status|request X-Sig|node_id|sha256(body))`, with the responder in `X-Node`. The client rejects unsigned answers and answers from a different node than the one it called. Without this, a stranger on the Wi-Fi could answer `/health` and receive chunks, or answer `HEAD` with a fake "I have it".
   - Per-node disk quota; a full node returns `507`.
   - Body size caps: chunk ≤ 1 MiB + 64 B, upload ≤ 256 MiB, otherwise `413`. FastAPI and Starlette have no default cap ([starlette#2155](https://github.com/encode/starlette/issues/2155)).
-  - No peer `DELETE` endpoint.
+  - `DELETE /chunks/{id}` succeeds only with the owner's delete token (§15). A leaked cluster key alone deletes nothing.
   - The user API shares the node's port (which binds `0.0.0.0`), but every user route rejects callers other than localhost with 403. `USER_API_ALLOW` can add specific addresses; it is only for Docker's gateway. The dashboard's static files at `/ui` carry no data and are served to anyone.
 - **Counter:** One leaked laptop exposes the shared key.
 - **Defense:** Per-node identities with mutual TLS are the better design (*planned*). The data itself is client-side encrypted, so a peer only ever holds ciphertext.
@@ -185,6 +185,7 @@ How metadata is stored:
 | Peer returns corrupted or fake chunk | Re-hash against chunk ID, then the GCM tag, then the whole-file SHA-256 | MVP |
 | Unauthorized node joins | Cluster HMAC | MVP |
 | Stranger answers as a peer (fake `/health`, fake `HEAD 200`) | Signed responses bound to the request signature | MVP |
+| Unauthorized delete | Owner-derived delete tokens; peers store only `SHA-256(token)` | MVP |
 | Disk exhaustion or huge upload | Quota (507) and body caps (413) | MVP |
 | Decompression bomb | `max_output_size = 1 MiB` per chunk | MVP |
 | Silent disk corruption (bit rot, a tampered file) | Background scrub re-hashes every stored chunk; failures are quarantined and repaired from another copy | MVP |
@@ -227,6 +228,31 @@ This is the same idea as our production delta OTA pipeline, which shipped a 21.6
 - **Verdict: ADD.** In the cut list it comes after repair.
 
 ---
+
+## 15. Delete: owner-derived delete tokens and tombstones
+
+- **Pick: delete tokens (not leases).**
+  - At upload, every chunk and manifest is stored with `delete_hash = SHA-256(token)`, where `token = HMAC(KEK, "delete" ‖ object_id)`.
+  - The hash travels in the **signed request path**, so nobody can swap it in transit.
+  - To delete, the owner sends the token in the **signed body** of `DELETE /chunks/{id}`, and the peer checks it against the stored hash.
+- **Why tokens are derived, not stored:** any laptop unlocked with the same username + passphrase recomputes the same tokens. A fresh laptop can still delete, and no token file exists to lose or steal.
+- **Counter 1: why not leases/TTL?**
+  - With a lease, the owner must keep renewing or the peers drop the data.
+  - That breaks the core promise: files survive when the uploader's laptop is off or gone. An owner on holiday for a month would lose everything.
+  - Leases also add steady renewal traffic.
+  - **Rejected.** Leases would only make sense as a backstop for garbage, which is *planned*.
+- **Counter 2: what about a holder that was offline during the delete?**
+  - A peer that deletes a chunk keeps a **tombstone** holding the revealed token.
+  - When the offline holder returns, its repair loop sees the chunk short of copies and tries to copy it out. The tombstoned peer answers `410 Gone` with the token.
+  - The returning holder checks `SHA-256(token)` against its own stored hash, then deletes its copy. A malicious peer can't fake this, because it can't produce a token that matches the hash.
+  - The owner also retries unfinished deletes every 15 s.
+  - **Measured** (4 local nodes): a node stopped during a delete had its copies erased **12 s** after it restarted.
+- **Counter 3: does another laptop still show the deleted file?** No. When a laptop syncs a newer signed file list, it drops entries the list no longer has, unless a manifest is merely unreachable at that moment.
+- **Limits:**
+  - **Old versions:** chunks used only by *older* versions of a file aren't tracked, so they stay until garbage collection (*planned*).
+  - **Old uploads:** chunks stored before this feature carry no delete hash and can't be deleted (`unprotected`).
+  - **Malicious peers:** a malicious peer can always keep a copy of ciphertext. Delete removes data from honest peers; the encryption protects against the rest.
+- **Verdict: ADD.**
 
 ## Counter to the whole idea: "Isn't this just a smaller Tahoe-LAFS?"
 

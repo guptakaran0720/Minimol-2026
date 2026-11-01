@@ -8,10 +8,15 @@ Goal: three people build in parallel without touching each other's files. A four
 
 | Person | Role | Owns | Tests owned |
 |---|---|---|---|
-| **P1** | Crypto & data | `node/pipeline.py`, `node/keys.py`, `node/manifest.py`, `node/index.py`; after hour 4: `ui/index.html` | `tests/test_pipeline.py`, `tests/test_keys.py`, `tests/test_manifest.py` |
-| **P2** | Node & network | `node/config.py`, `node/auth.py`, `node/chunkstore.py`, `node/peer_client.py`, `node/api_peer.py`, `node/peers.py`, `node/inventory.py`, `node/main.py`, `node/discovery.py`, `scripts/run_cluster.sh` | `tests/test_chunkstore.py`, `tests/test_auth.py`, `tests/test_peers.py` |
-| **P3** | Routing, transfer & repair | `node/routing.py`, `node/transfer.py`, `node/repair.py`, `node/api_user.py`, `bench/bench.py` | `tests/test_routing.py`, `tests/test_repair.py`, `tests/test_cluster.py` |
-| **P4** | Explanation & demo | `docs/explain/*`, `docs/DEMO_SCRIPT.md`, `docs/JUDGE_QA.md`, `docs/RESULTS.md`, `docs/SLIDES.md`, `README.md` | Runs the full test suite and `bench.py` at every merge; owns the results table |
+| **P1** | Crypto & data | `node/pipeline.py`, `node/keys.py`, `node/manifest.py`, `node/index.py`; after hour 4, with P3: the `ui/` dashboard | `tests/test_pipeline.py`, `tests/test_keys.py`, `tests/test_manifest.py`, `tests/test_index.py`, `tests/test_p1_flow.py` |
+| **P2** | Node & network | `node/config.py`, `node/auth.py`, `node/chunkstore.py`, `node/peer_client.py`, `node/api_peer.py`, `node/peers.py`, `node/inventory.py`, `node/discovery.py`, `node/scrub.py`, `node/events.py`, `node/main.py`, `scripts/run_cluster.sh`, `docs/TAILSCALE.md` | `tests/test_chunkstore.py`, `tests/test_auth.py`, `tests/test_peers.py`, `tests/test_api_peer.py`, `tests/test_scrub.py`, `tests/test_events.py` |
+| **P3** | Routing, transfer & repair | `node/routing.py`, `node/transfer.py`, `node/repair.py`, `node/api_user.py`, `bench/bench.py`, Docker (`Dockerfile`, `compose.yaml`, `scripts/docker_e2e.sh`, `docs/DOCKER.md`), `tests/fakes.py` | `tests/test_routing.py`, `tests/test_transfer.py`, `tests/test_repair.py`, `tests/test_api_user.py`, `tests/test_bench.py`, `tests/test_main_ui.py`, `tests/test_cluster.py` |
+| **P4** | Explanation & demo | `docs/explain/*`, `docs/DEMO_SCRIPT.md`, `docs/JUDGE_QA.md`, `docs/RESULTS.md`, `docs/SLIDES.md`, `README.md`, the pitch deck (`docs/deck/`, `docs/Minimol_Storage_Pitch.pptx`), charts (`docs/img/`) | Runs the full test suite and `bench.py` at every merge; owns the results table |
+
+What each builder's code does at run time, in one line:
+- **P1** turns a chunk into ciphertext and back, and makes and checks the keys and the signed file list.
+- **P2** stores chunks on disk, carries every signed message between laptops, tracks who is alive and who holds what, scrubs the disk for rot, and records the cluster timeline.
+- **P3** decides where each chunk goes and where to fetch it from, runs uploads, downloads, repair and recovery, keeps every unlocked laptop's file list in sync, and serves the user API.
 
 ## Hour 0 (all four together, 30 min): freeze the contracts
 
@@ -52,14 +57,15 @@ Points everyone must match:
 |---|---|---|
 | GET | `/health` | `{node_id, host_id, free_bytes, used_bytes, chunk_count, uptime_s}` |
 | GET | `/peers` | `[{node_id, host_id, addr}]` (gossip) |
-| PUT | `/chunks/{id}` | 201 new, 200 already present, 400 hash mismatch, 413 too big, 507 quota full |
+| PUT | `/chunks/{id}` and `/chunks/{id}/{delete_hash}` | 201 new, 200 already present, 400 hash mismatch, 410 deleted by its owner (body reveals the token), 413 too big, 507 quota full |
+| DELETE | `/chunks/{id}` (body `{token}`) | 200 deleted, 403 wrong token, 404 absent, 409 stored without a delete hash |
 | GET | `/chunks/{id}` | raw bytes, or 404 |
 | HEAD | `/chunks/{id}` | 200 or 404 |
 | GET | `/inventory` | `[chunk_id, ...]` |
 | PUT | `/index/{owner_pub}` | 201; 409 if the version is not newer; 401 bad signature |
 | GET | `/index/{owner_pub}` | signed record, or 404 |
 
-There is **no** DELETE route.
+Deleting needs the owner's token, not just the cluster key (ARCHITECTURE_DECISIONS.md §15).
 
 **User API (P3):** served on the node's port, but every route answers only localhost callers (403 otherwise; `USER_API_ALLOW` is for Docker only).
 
@@ -67,9 +73,12 @@ There is **no** DELETE route.
 |---|---|
 | POST | `/files?name=<name>` (raw file bytes as the body, ≤ 256 MiB, else 413) |
 | GET | `/files` |
-| GET | `/files/{uuid}` (served only after the whole-file SHA-256 matches; header `X-File-SHA256`) |
+| GET | `/files/{uuid}` (served only after the whole-file SHA-256 matches; header `X-File-SHA256`; `?inline=true` previews, serving anything that could run code as plain text inside a CSP sandbox) |
+| DELETE | `/files/{uuid}` (removes it from the file list and erases its chunks from every peer) |
+| POST | `/logout` (drops keys from memory, stops syncing, deletes the local file-list cache) |
 | GET | `/files/{uuid}/map` |
 | GET | `/stats` (works while locked; feeds the dashboard) |
+| GET | `/events` (P2, `node/main.py`: the cluster timeline. Peer joined, suspect, dead, back, slow tier, chunk quarantined, merged with P3's repair copies, newest first, plus scrub counters) |
 | POST | `/recover` (body: `{username, passphrase}`; unlocks the node and pulls the owner index. Every other route returns 401 until this succeeds) |
 
 ## How each builder works without waiting on the others
