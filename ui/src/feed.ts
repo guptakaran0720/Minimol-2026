@@ -1,8 +1,9 @@
-// Turns successive polls into a short log of what changed, for the live ticker.
-// Repair events come from the node; peer, tier and file changes are spotted here by
-// comparing each poll with the previous one.
+// What the live ticker and the timeline tile say. Cluster events (peers joining,
+// going suspect or dead, tier moves, scrub finds, repair copies) come from the
+// node's GET /events. File status changes and this laptop's uploads are spotted
+// here by comparing each poll with the previous one.
 import { useEffect, useRef, useState } from "react";
-import type { FileEntry, Stats, UploadResult } from "./api";
+import type { ClusterEvent, FileEntry, Stats, Timeline, UploadResult } from "./api";
 import { formatBytes } from "./api";
 import type { Tone } from "./identity";
 
@@ -22,67 +23,58 @@ export function squeeze(original: number, encoded: number): string {
   return `${Math.round((1 - encoded / original) * 100)}% smaller`;
 }
 
-export function useClusterFeed(stats: Stats | null, files: FileEntry[] | null, upload: UploadResult | null) {
-  const [items, setItems] = useState<FeedItem[]>([]);
-  const peersBefore = useRef<Map<string, { state: string; tier: number }> | null>(null);
+export function eventKey(e: ClusterEvent): string {
+  return `${e.source}-${e.seq ?? ""}-${e.t}-${e.kind}-${e.chunk ?? ""}`;
+}
+
+/** One line of plain text and a colour for a node or repair event. */
+export function describeEvent(e: ClusterEvent): { tone: Tone; text: string } {
+  const chunk = e.chunk?.slice(0, 12);
+  switch (e.kind) {
+    case "node_started":
+      return { tone: "blue", text: `${e.node} started with ${e.chunks ?? 0} chunks on disk` };
+    case "peer_joined":
+      return { tone: "blue", text: `${e.node} joined${e.addr ? ` from ${e.addr}` : ""}` };
+    case "peer_suspect":
+      return { tone: "yellow", text: `${e.node} is suspect · ${e.reason ?? "missed heartbeats"}` };
+    case "peer_dead":
+      return { tone: "red", text: `${e.node} is dead · ${e.reason ?? "no contact"}` };
+    case "peer_alive":
+      return { tone: "green", text: `${e.node} is back${e.previous ? ` (was ${e.previous})` : ""}` };
+    case "peer_slow":
+      return { tone: "yellow", text: `${e.node} moved to the slow tier · no new chunks` };
+    case "peer_fast":
+      return { tone: "green", text: `${e.node} is fast again` };
+    case "chunk_quarantined":
+      return { tone: "red", text: `chunk ${chunk} on ${e.node} failed its hash check · quarantined, repair restores it` };
+    case "chunk_missing":
+      return { tone: "red", text: `chunk ${chunk} vanished from ${e.node}'s disk` };
+    case "copied":
+      return { tone: "green", text: `repair copied chunk ${chunk} → ${e.to}` };
+    case "corrupt_local":
+      return { tone: "red", text: `repair skipped a corrupt local copy of ${chunk}` };
+    default:
+      return { tone: "blue", text: e.kind.replace(/_/g, " ") };
+  }
+}
+
+export function useClusterFeed(
+  timeline: Timeline | null,
+  stats: Stats | null,
+  files: FileEntry[] | null,
+  upload: UploadResult | null,
+): FeedItem[] {
+  const [local, setLocal] = useState<FeedItem[]>([]);
   const filesBefore = useRef<Map<string, { status: string; version: number }> | null>(null);
-  const seenRepairs = useRef(new Set<string>());
   const lastUpload = useRef<UploadResult | null>(null);
 
   const push = (fresh: FeedItem[]) => {
     if (fresh.length === 0) return;
-    setItems((old) => {
+    setLocal((old) => {
       const known = new Set(old.map((i) => i.key));
-      const add = fresh.filter((i) => !known.has(i.key));
-      return [...add, ...old].sort((a, b) => b.t - a.t).slice(0, KEEP);
+      return [...fresh.filter((i) => !known.has(i.key)), ...old].sort((a, b) => b.t - a.t).slice(0, KEEP);
     });
   };
-
-  useEffect(() => {
-    if (!stats) return;
-    const now = Date.now() / 1000;
-    const fresh: FeedItem[] = [];
-
-    for (const e of stats.repair.events) {
-      const key = `r-${e.t}-${e.chunk}-${e.to ?? ""}`;
-      if (seenRepairs.current.has(key)) continue;
-      seenRepairs.current.add(key);
-      fresh.push(
-        e.kind === "copied"
-          ? { key, t: e.t, tone: "green", text: `chunk ${e.chunk.slice(0, 12)} re-copied → ${e.to}` }
-          : { key, t: e.t, tone: "red", text: `local copy of ${e.chunk.slice(0, 12)} failed its hash check` },
-      );
-    }
-
-    const prev = peersBefore.current;
-    const next = new Map(stats.peers.map((p) => [p.node_id, { state: p.state, tier: p.tier }]));
-    if (prev) {
-      for (const p of stats.peers) {
-        const was = prev.get(p.node_id);
-        const key = (what: string) => `p-${p.node_id}-${what}-${Math.floor(now)}`;
-        if (!was) {
-          fresh.push({ key: key("joined"), t: now, tone: "blue", text: `${p.node_id} joined the cluster` });
-          continue;
-        }
-        if (was.state !== p.state) {
-          if (p.state === "dead")
-            fresh.push({ key: key("dead"), t: now, tone: "red", text: `${p.node_id} is dead · no heartbeat for 20 s` });
-          else if (p.state === "suspect")
-            fresh.push({ key: key("suspect"), t: now, tone: "yellow", text: `${p.node_id} missed heartbeats · repair waits` });
-          else fresh.push({ key: key("back"), t: now, tone: "blue", text: `${p.node_id} is back` });
-        }
-        if (was.tier !== p.tier && p.state === "alive") {
-          fresh.push(
-            p.tier === 2
-              ? { key: key("slow"), t: now, tone: "yellow", text: `${p.node_id} moved to the slow tier · ${p.rtt_ms.toFixed(0)} ms` }
-              : { key: key("fast"), t: now, tone: "blue", text: `${p.node_id} is fast again` },
-          );
-        }
-      }
-    }
-    peersBefore.current = next;
-    push(fresh);
-  }, [stats]);
 
   useEffect(() => {
     if (!files) return;
@@ -122,5 +114,9 @@ export function useClusterFeed(stats: Stats | null, files: FileEntry[] | null, u
     ]);
   }, [upload]);
 
-  return items;
+  // Prefer the node's timeline; fall back to /stats repair events if /events is unreachable.
+  const cluster: ClusterEvent[] =
+    timeline?.events ?? (stats?.repair.events ?? []).map((e) => ({ ...e, source: "repair" as const }));
+  const remote = cluster.slice(0, KEEP).map((e) => ({ key: eventKey(e), t: e.t, ...describeEvent(e) }));
+  return [...remote, ...local].sort((a, b) => b.t - a.t).slice(0, KEEP);
 }

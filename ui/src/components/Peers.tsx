@@ -1,11 +1,11 @@
 import { formatBytes, type Peer } from "../api";
 import { PeerMark, type Look } from "../identity";
 
-export function Peers({ peers, looks }: { peers: Peer[]; looks: Map<string, Look> }) {
+export function Peers({ peers, looks, wide = false }: { peers: Peer[]; looks: Map<string, Look>; wide?: boolean }) {
   const alive = peers.filter((p) => p.state === "alive").length;
   const rows = [...peers].sort((a, b) => a.node_id.localeCompare(b.node_id));
   return (
-    <section className="tile tile-white tile-list s12" aria-labelledby="peers-title">
+    <section className={`tile tile-white tile-list ${wide ? "s12" : "s7"}`} aria-labelledby="peers-title">
       <div className="tile-head">
         <h2 id="peers-title" className="tile-title">
           Peers

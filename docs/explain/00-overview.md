@@ -61,16 +61,18 @@ What travels between nodes is always ciphertext: encrypted chunks, encrypted man
 
 ## The demo story
 
-From [ARCHITECTURE_DECISIONS.md "Demo order"](../ARCHITECTURE_DECISIONS.md#demo-order-most-valuable-first):
+The live demo runs on our 3 laptops; the full timed script is [DEMO_SCRIPT.md](../DEMO_SCRIPT.md):
 
-1. Upload a 20 MB sensor CSV. Show the measured compression ratio.
-2. Open the chunk map. Every chunk sits on 3 different hosts.
-3. Turn on the simulated delay on one node. It gets 0 new chunks, and downloads route around it. Show the A/B numbers.
-4. Kill a node. The download still works and the SHA-256 matches.
-5. Watch repair bring every chunk back to 3 live copies.
-6. Kill a second original holder. The download still works.
-7. On a different node, unlock with the same username and passphrase. Every file comes back.
-8. Append rows to the CSV and re-upload. Only the changed chunk is sent.
+1. Upload a sensor CSV. Show the measured compression ratio. The chunk map shows every chunk on all 3 laptops.
+2. Upload a photo: compression is skipped.
+3. Show that a stored piece is unreadable.
+4. Switch a laptop off. The download still works and the SHA-256 matches.
+5. It turns red after about 20 s and files show degraded (two laptops can't hold three independent copies).
+6. Upload while it's away (2 copies, degraded), then switch it back on: the missing copies are refilled and everything is healthy within seconds.
+7. Append rows to the CSV and re-upload. Only the changed chunk is sent.
+8. Start a brand-new empty node, unlock with the same username and passphrase: every file comes back and the cluster refills its storage.
+
+Smart routing (slow node gets 0 new chunks; ETA ranking + hedging 11.6× faster) is shown from the 4-node Docker A/B, because with 3 laptops every chunk must be on all three.
 
 If the laptops can't reach each other, we run the same demo on Docker (`docker compose up -d`, see [DOCKER.md](../DOCKER.md)) and say so on stage.
 

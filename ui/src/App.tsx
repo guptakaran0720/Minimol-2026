@@ -7,6 +7,7 @@ import { ChunkMapView } from "./components/ChunkMapView";
 import { Files } from "./components/Files";
 import { Peers } from "./components/Peers";
 import { Repair } from "./components/Repair";
+import { Timeline } from "./components/Timeline";
 import { Ticker, type TickerLine } from "./components/Ticker";
 import { HealthTile, LinkTile, PeersTile, RecoveryTile, RepairTile } from "./components/Tiles";
 import { Unlock } from "./components/Unlock";
@@ -16,6 +17,7 @@ const POLL_MS = 2000;
 
 export default function App() {
   const stats = usePoll(api.stats, POLL_MS);
+  const timeline = usePoll(api.events, POLL_MS);
   const unlocked = stats.data?.unlocked ?? false;
   const files = usePoll(api.files, POLL_MS, unlocked ? "files" : null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -33,7 +35,7 @@ export default function App() {
   const s = stats.data;
   const peers = s?.peers ?? [];
   const looks = useMemo(() => peerLooks(peers), [peers]);
-  const feed = useClusterFeed(s, unlocked ? files.data : null, lastUpload);
+  const feed = useClusterFeed(timeline.data, s, unlocked ? files.data : null, lastUpload);
   const fakeCodec = s?.codec.startsWith("FAKE");
 
   const status: TickerLine[] = [];
@@ -136,8 +138,9 @@ export default function App() {
           {unlocked && (
             <ChunkMapView map={map.data} file={(files.data ?? []).find((f) => f.file_uuid === selected)} peers={peers} looks={looks} />
           )}
-          <Repair repair={s.repair} wide={!unlocked} />
-          <Peers peers={peers} looks={looks} />
+          <Timeline data={timeline.data} wide={!unlocked} />
+          <Repair repair={s.repair} scrub={timeline.data?.scrub ?? null} />
+          <Peers peers={peers} looks={looks} wide={!unlocked} />
         </main>
       ) : (
         !stats.error && <p className="loading">Connecting to this node…</p>

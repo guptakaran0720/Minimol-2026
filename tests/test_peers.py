@@ -245,3 +245,39 @@ def test_mdns_record_filtering():
     assert candidate_from_service({b"node_id": b"b", b"tag": b"other"}, ["1.2.3.4"], 8000, tag, "me") is None
     assert candidate_from_service({b"node_id": b"me", b"tag": tag.encode()}, ["1.2.3.4"], 8000, tag, "me") is None
     assert candidate_from_service(ok, [], 8000, tag, "me") is None
+
+
+def test_state_changes_are_recorded_as_events():
+    clock, table, client = setup()
+    join(table, client, "b")
+    del client.up["b:1"]
+    for _ in range(2):
+        clock.t += 2
+        beat(table, client)
+    clock.t += config.DEAD_AFTER_S
+    beat(table, client)
+    client.up["b:1"] = health("b")
+    beat(table, client)
+    kinds = [(e["kind"], e["node"]) for e in table.events.since(0)]
+    assert kinds == [("peer_joined", "b"), ("peer_suspect", "b"), ("peer_dead", "b"), ("peer_alive", "b")]
+    assert "missed 2 heartbeats" in table.events.since(0)[1]["reason"]
+
+
+def test_self_last_seen_stays_current():
+    clock, table, client = setup()
+    clock.t += 300
+    beat(table, client)
+    me = [p for p in table.snapshot() if p["self"]][0]
+    assert me["last_ok_s_ago"] == 0
+
+
+def test_peer_table_writes_to_the_log_it_was_given():
+    """An empty EventLog is falsy (it has __len__); the table must still use it, not a private one."""
+    from node.events import EventLog
+
+    shared = EventLog()
+    clock = Clock()
+    table = PeerTable(Peer(node_id="me", host_id="h-me", addr="me:1"), clock=clock, events=shared)
+    client = FakeClient()
+    join(table, client, "b")
+    assert [e["kind"] for e in shared.since(0)] == ["peer_joined"]

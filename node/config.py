@@ -17,6 +17,7 @@ SUSPECT_AFTER_MISSED = 2
 DEAD_AFTER_S = 20.0
 INVENTORY_INTERVAL_S = 10.0
 GOSSIP_INTERVAL_S = 5.0
+SCRUB_INTERVAL_S = 1.0       # scrub SCRUB_PER_S chunks every second
 CONNECT_TIMEOUT_S = 1.0
 READ_TIMEOUT_S = 5.0
 FAILURE_COOLDOWN_S = 15.0
@@ -59,6 +60,7 @@ class Settings:
     weight: float = 1.0
     simulated_delay_ms: int = 0
     mdns: bool = True
+    scrub_per_s: int = 8         # chunks re-hashed per second; 0 turns scrubbing off
     # Extra client networks allowed to use the user API besides localhost. Only for
     # Docker, where published ports arrive from the bridge gateway. Never a LAN range.
     user_api_allow: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = field(default_factory=list)
@@ -87,6 +89,7 @@ class Settings:
             weight=weight,
             simulated_delay_ms=int(env.get("SIMULATED_DELAY_MS", "0")),
             mdns=env.get("MDNS", "1") not in ("0", "false", "no", ""),
+            scrub_per_s=int(env.get("SCRUB_PER_S", "8")),
             user_api_allow=[ipaddress.ip_network(n.strip(), strict=False)
                             for n in env.get("USER_API_ALLOW", "").split(",") if n.strip()],
         )

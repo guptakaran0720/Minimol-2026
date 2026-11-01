@@ -3,7 +3,8 @@
     CLUSTER_KEY=... uvicorn node.main:app --host 0.0.0.0 --port 8000
     CLUSTER_KEY=... python -m node.main          # same, using BIND_HOST / PORT
 
-Starts the peer API plus the background loops (heartbeat, inventory, gossip).
+Starts the peer API plus the background loops (heartbeat, inventory, gossip,
+scrub), and GET /events: the dashboard timeline (localhost only).
 Other owners' parts are wired in when their modules exist:
 - P1 node/index.py: verify_index(record, owner_pub) -> version
 - P3 node/api_user.py: create_router(node: Node) -> APIRouter, served on this
@@ -17,7 +18,7 @@ import importlib
 import logging
 import os
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -30,9 +31,11 @@ from node.chunkstore import DiskChunkStore, IndexStore
 from node.config import Settings, user_api_client_ok
 from node.contracts import Peer
 from node.discovery import MdnsDiscovery, add_seeds, gossip_once
+from node.events import EventLog
 from node.inventory import LocationMap, inventory_once
 from node.peer_client import HttpPeerClient
 from node.peers import PeerTable, heartbeat_once
+from node.scrub import scrub_once
 
 log = logging.getLogger("node")
 UI_DIST = Path(__file__).resolve().parent.parent / "ui" / "dist"
@@ -46,6 +49,7 @@ class Node:
     peers: PeerTable
     client: HttpPeerClient
     locations: LocationMap
+    events: EventLog = field(default_factory=EventLog)
 
 
 def build_node(settings: Settings) -> Node:
@@ -53,7 +57,8 @@ def build_node(settings: Settings) -> Node:
               weight=settings.weight)
     store = DiskChunkStore(settings.data_dir, settings.quota_bytes)
     me.free_bytes = store.free_bytes()
-    peers = PeerTable(me)
+    events = EventLog()
+    peers = PeerTable(me, events=events)
     add_seeds(peers, settings.seeds)
     return Node(
         settings=settings,
@@ -62,7 +67,17 @@ def build_node(settings: Settings) -> Node:
         peers=peers,
         client=HttpPeerClient(settings.node_id, settings.cluster_key, advertise_addr=settings.advertise_addr),
         locations=LocationMap(),
+        events=events,
     )
+
+
+def timeline(node: Node, repairer=None, limit: int = 200) -> dict:
+    """P2 events plus P3's repair events, newest first, for the dashboard."""
+    merged = [{**e, "source": "node"} for e in node.events.since(0)]
+    for e in list(getattr(repairer, "events", None) or []):
+        merged.append({**e, "source": "repair"})
+    merged.sort(key=lambda e: e["t"], reverse=True)
+    return {"node_id": node.settings.node_id, "events": merged[:limit], "scrub": node.store.scrub_stats}
 
 
 def _optional(module: str, attr: str):
@@ -112,6 +127,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                    lambda: inventory_once(n.locations, n.peers, n.client, n.store)),
             _every(config.GOSSIP_INTERVAL_S, "gossip", lambda: gossip_once(n.peers, n.client)),
         ]
+        if settings.scrub_per_s > 0:
+            loops.append(_every(config.SCRUB_INTERVAL_S, "scrub", lambda: scrub_once(
+                n.store, n.locations, settings.node_id, n.events, settings.scrub_per_s)))
         repairer_cls = _optional("node.repair", "Repairer")
         if repairer_cls is not None:
             repairer = repairer_cls(settings.node_id, settings.host_id, n.store, n.peers, n.client, n.locations)
@@ -123,6 +141,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await mdns.start()
         log.info("node %s (host %s) at %s, seeds %s", settings.node_id, settings.host_id,
                  settings.advertise_addr, settings.seeds or "none")
+        n.events.add("node_started", node=settings.node_id, chunks=len(n.store.list_ids()))
         try:
             yield
         finally:
@@ -134,6 +153,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = create_peer_app(settings, node.store, node.index_store, node.peers, verify_index, lifespan)
     app.state.node = node
+
+    @app.get("/events", dependencies=[Depends(localhost_only(settings))])
+    async def events():
+        return timeline(node, getattr(app.state, "repairer", None))
 
     create_router = _optional("node.api_user", "create_router")
     if create_router is not None:
