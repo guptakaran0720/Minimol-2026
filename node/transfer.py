@@ -33,6 +33,9 @@ from node.contracts import (
     UploadResult,
 )
 from node.routing import (
+    PRIOR_BW_BPS,
+    PRIOR_RTT_S,
+    eta_seconds,
     rank_for_placement,
     rank_for_placement_baseline,
     rank_for_retrieval,
@@ -69,8 +72,15 @@ class Transfer:
         parallel: int = 4,
         catalog_path: Path | None = None,
         chunk_size: int = CHUNK_SIZE,
+        hedge: bool = True,
+        hedge_factor: float = 2.0,
+        hedge_min_s: float = 0.05,
     ):
         self.chunk_size = chunk_size
+        self.hedge = hedge
+        self.hedge_factor = hedge_factor
+        self.hedge_min_s = hedge_min_s
+        self.hedges_fired = 0
         self.keys = keys
         self.codec = codec
         self.peers = peers
@@ -219,7 +229,7 @@ class Transfer:
         if entry is None:
             raise FileNotFoundError(file_uuid)
         rank = RETRIEVALS[retrieval]
-        manifest = await self._load_manifest(entry["manifest_id"])
+        manifest = await self._load_manifest(entry["manifest_id"], rank)
         dek = self.codec.unwrap_key(self.keys.kek, manifest.wrapped_dek)
 
         async def one(c: dict) -> bytes:
@@ -251,18 +261,50 @@ class Transfer:
         return manifest
 
     async def _fetch(self, object_id: str, size: int, rank=rank_for_retrieval) -> bytes:
+        hedge = self.hedge and rank is rank_for_retrieval      # baselines stay un-hedged for a fair A/B
         holders = [p for n in self.locations.holders(object_id) if (p := self.peers.get(n))]
-        tried: set[str] = set()
-        for p in rank(holders, size):
-            tried.add(p.node_id)
-            if (blob := await self._get(p, object_id)) is not None:
-                return blob
+        ranked = rank(holders, size)
+        if (blob := await self._first_verified(ranked, object_id, size, hedge)) is not None:
+            return blob
         # The location map is soft state and may be stale: ask everyone else before giving up.
-        others = [p for p in self.peers.alive() if p.node_id not in tried]
-        for p in rank(others, size):
-            if (blob := await self._get(p, object_id)) is not None:
-                return blob
+        tried = {p.node_id for p in ranked}
+        others = rank([p for p in self.peers.alive() if p.node_id not in tried], size)
+        if (blob := await self._first_verified(others, object_id, size, hedge)) is not None:
+            return blob
         raise ChunkUnavailable(object_id)
+
+    def _hedge_delay(self, peer: Peer, size: int) -> float:
+        return max(self.hedge_min_s, self.hedge_factor * eta_seconds(peer, size, PRIOR_RTT_S, PRIOR_BW_BPS))
+
+    async def _first_verified(self, ranked: list[Peer], object_id: str, size: int, hedge: bool) -> bytes | None:
+        """Try peers in order; return the first blob whose hash matches.
+
+        Hedged read ("The Tail at Scale"): if the newest request runs past 2x its
+        ETA, also ask the next peer and take whichever verified reply lands first.
+        A request that fails moves on at once. Losing requests are cancelled."""
+        queue = list(ranked)
+        running: dict[asyncio.Task, Peer] = {}
+        try:
+            while queue or running:
+                if not running:
+                    p = queue.pop(0)
+                    running[asyncio.create_task(self._get(p, object_id))] = p
+                newest = next(reversed(running.values()))
+                timeout = self._hedge_delay(newest, size) if hedge and queue else None
+                done, _ = await asyncio.wait(running, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+                if not done:
+                    p = queue.pop(0)
+                    self.hedges_fired += 1
+                    running[asyncio.create_task(self._get(p, object_id))] = p
+                    continue
+                for task in done:
+                    del running[task]
+                    if (blob := task.result()) is not None:
+                        return blob
+            return None
+        finally:
+            for task in running:
+                task.cancel()
 
     async def _get(self, peer: Peer, object_id: str) -> bytes | None:
         started = time.monotonic()
@@ -280,8 +322,8 @@ class Transfer:
         self.locations.note(object_id, peer.node_id)
         return blob
 
-    async def _load_manifest(self, manifest_id: str) -> Manifest:
-        blob = await self._fetch(manifest_id, MANIFEST_SIZE_HINT)
+    async def _load_manifest(self, manifest_id: str, rank=rank_for_retrieval) -> Manifest:
+        blob = await self._fetch(manifest_id, MANIFEST_SIZE_HINT, rank)
         return self.codec.open_manifest(blob, self.keys.kek)
 
     # ---------- owner index + recovery ----------

@@ -1,4 +1,5 @@
 import asyncio
+import time
 import io
 import os
 
@@ -272,3 +273,59 @@ def test_catalog_persists_to_disk(tmp_path):
     reloaded = Transfer(keys_for(codec), codec, table, client, locs, catalog_path=path, chunk_size=CHUNK)
     assert down(reloaded, res.file_uuid) == b"hello" * 500
     assert reloaded.index_version == t.index_version
+
+
+class StallingClient:
+    """Wraps a FakeClient; GETs from `stalled` nodes hang for `stall_s`."""
+
+    def __init__(self, inner, stalled, stall_s):
+        self.inner, self.stalled, self.stall_s = inner, set(stalled), stall_s
+        self.cancelled = 0
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    async def get_chunk(self, peer, chunk_id):
+        if peer.node_id in self.stalled:
+            try:
+                await asyncio.sleep(self.stall_s)
+            except asyncio.CancelledError:
+                self.cancelled += 1
+                raise
+        return await self.inner.get_chunk(peer, chunk_id)
+
+
+def stalled_setup(hedge):
+    net, table, client, locs, codec, t = setup()
+    data = os.urandom(CHUNK * 4)
+    res = up(t, data, "f")
+    # node0 looks fastest on paper (stale estimate), so it is tried first, but it hangs.
+    for p in table.peers.values():
+        p.rtt_ewma, p.bw_ewma = (0.0001, 1e9) if p.node_id == "node0" else (0.002, 50e6)
+    stalling = StallingClient(client, {"node0"}, stall_s=1.0)
+    t2 = Transfer(t.keys, codec, table, stalling, locs, chunk_size=CHUNK, hedge=hedge)
+    t2.catalog, t2.index_version = t.catalog, t.index_version
+    return t2, stalling, data, res
+
+
+def test_hedged_read_beats_a_stalled_holder():
+    t, stalling, data, res = stalled_setup(hedge=True)
+    started = time.perf_counter()
+    assert down(t, res.file_uuid) == data
+    assert time.perf_counter() - started < 0.6
+    assert t.hedges_fired >= 1 and stalling.cancelled >= 1
+
+
+def test_without_hedging_a_stalled_holder_costs_the_full_stall():
+    t, stalling, data, res = stalled_setup(hedge=False)
+    started = time.perf_counter()
+    assert down(t, res.file_uuid) == data
+    assert time.perf_counter() - started >= 1.0
+    assert t.hedges_fired == 0
+
+
+def test_random_baseline_is_never_hedged():
+    t, stalling, data, res = stalled_setup(hedge=True)
+    out = io.BytesIO()
+    run(t.download(res.file_uuid, out, "random"))
+    assert out.getvalue() == data and t.hedges_fired == 0
