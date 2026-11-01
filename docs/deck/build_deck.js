@@ -307,9 +307,9 @@ async function build() {
   // ===== 7. Retrieval =====
   {
     const s = content("Evidence", t("Downloads ask the ", "fastest holder", C.accent1),
-      "Each chunk has three holders. We rank them by estimated fetch time: round-trip time plus chunk size divided by measured bandwidth. If a request runs past twice its estimate, we also ask the next holder and keep whichever verified reply lands first. Same file, same cluster, only the ordering changes.");
+      "Each chunk has three holders. We rank them by estimated fetch time: round-trip time plus chunk size divided by measured bandwidth. If a request runs past twice its estimate, we also ask the next holder and keep whichever verified reply lands first. Same file, same cluster. To be precise: the smart path is ETA ranking plus hedged reads, the baseline is a random holder with no hedging.");
     s.addChart(pres.charts.BAR, [
-      { name: "Median download time (s)", labels: ["Fastest holder first", "Random holder"], values: [0.146, 1.697] },
+      { name: "Median download time (s)", labels: ["ETA + hedged reads", "Random holder"], values: [0.146, 1.697] },
     ], {
       x: M, y: 1.6, w: 7.4, h: 4.95, barDir: "bar", chartColors: [HEX.blue], invertedColors: [HEX.blue],
       showTitle: true, title: "Median time to download a 20 MB file (s), node-4 delayed 300 ms", titleFontSize: 14, titleColor: HEX.ink, titleFontFace: "+mn-lt",
@@ -320,7 +320,7 @@ async function build() {
     });
     block(s, 8.4, 1.6, 4.33, 2.35, C.accent1);
     text(s, "11.6× faster", { x: 8.75, y: 1.9, w: 3.7, h: 0.8, fontSize: 40, bold: true, color: C.background1 });
-    text(s, "median download, same file and cluster, only the holder order changed", { x: 8.75, y: 2.75, w: 3.7, h: 1.0, fontSize: 14, color: C.background1 });
+    text(s, "median download: ETA ranking with hedged reads vs a random holder, same file and cluster", { x: 8.75, y: 2.75, w: 3.7, h: 1.0, fontSize: 14, color: C.background1 });
     text(s, "How the ranking works", { x: 8.4, y: 4.25, w: 4.33, h: 0.4, fontSize: 17, bold: true });
     const how = ["ETA = round-trip time + size ÷ bandwidth", "A peer that just failed waits 15 s at the back", "Stalled request? Ask the next holder too"];
     how.forEach((w, i) => {
@@ -435,11 +435,11 @@ async function build() {
       "Every number here came out of bench.py on a four-node Docker cluster with real encryption and compression, median of five runs. Say clearly that it's one machine; the multi-laptop run is part of the demo.");
     const tiles = [
       [C.accent1, C.background1, "0.30×", "size of a 20 MB CSV after compression and encryption"],
-      [C.accent4, C.background1, "11.6×", "faster downloads than picking a random holder"],
+      [C.accent4, C.background1, "11.6×", "faster downloads: ETA ranking + hedged reads vs a random holder"],
       [C.accent3, C.text1, "0%", "of new copies on the slow peer (random: 21.7%)"],
       [C.accent2, C.background1, "≈ 20–40 s", "from a node dying to every chunk back at 3 copies"],
       [C.background1, C.text1, "0.19 MB", "sent to re-upload a 20 MB file after a 1% append"],
-      [C.background1, C.text1, "164 + 1", "automated tests passing, plus a live 4-node cluster test"],
+      [C.background1, C.text1, "166 + 1", "automated tests passing, plus a live 4-node cluster test"],
     ];
     const tw = 3.85, th = 2.25, gx = 0.27, gy = 0.3;
     tiles.forEach(([fill, ink, big, label], i) => {

@@ -38,6 +38,8 @@ Random bytes don't compress, so every chunk is stored raw (ratio 1.000), as desi
 |---|---|---|---|---|
 | 20.20 MB | **0.188 MB** | 0.0093 | 1 / 20 | match |
 
+"Sent" counts every copy that went over the network: 3 copies of the one changed chunk.
+
 ### Placement A/B: smart (tiered rendezvous) vs random baseline
 
 Before the A/B started, node-4 had reached the slow tier (tier 2) after an 11.0 s warm-up.
@@ -49,9 +51,9 @@ Before the A/B started, node-4 had reached the slow tier (tier 2) after an 11.0 
 
 Download times are about the same in both rows. That's because downloads already route around the slow node; the next table isolates that effect.
 
-### Retrieval A/B: fastest holder first (ETA) vs random holder
+### Retrieval A/B: ETA ranking with hedged reads vs random holder
 
-The file was placed with the random baseline so that the slow node really holds chunks.
+The file was placed with the random baseline so that the slow node really holds chunks. The smart path is ETA ranking **plus** hedged reads; the baseline tries holders in random order with no hedging. The speedup is for the two together, not for ETA ranking alone.
 
 | ETA ordering | Random holder | Median speedup |
 |---|---|---|
@@ -92,7 +94,7 @@ So the honest figure is **about 20–40 s**.
 
 | Check | Result |
 |---|---|
-| `pytest` (Python 3.12 local, 3.11 in Docker) | 164 passed, 1 skipped (the live cluster test, which needs running nodes) |
+| `pytest` (Python 3.12 local, 3.11 in Docker) | 166 passed, 1 skipped (the live cluster test, which needs running nodes) |
 | `tests/test_cluster.py` on Docker and on local processes | passed: upload → distinct hosts → kill → download → dead → repair → recover on another node → second kill → download |
 | Fresh-node recovery from username + passphrase | passed (part of the cluster test) |
 

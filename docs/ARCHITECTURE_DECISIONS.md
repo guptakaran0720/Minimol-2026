@@ -39,7 +39,7 @@ The original order was: whole file → compress → encrypt → split into chunk
 - **Defense:** zstd level 3 only looks back a few MB, so the loss should be small. That is an estimate, so **measure both modes** and show the result. In return we get:
   - an integrity check on every chunk,
   - memory usage limited to one chunk,
-  - decompressed output capped at 1 MiB per chunk (`max_output_size`, see the [python-zstandard docs](https://python-zstandard.readthedocs.io/en/latest/decompressor.html)),
+  - decompressed output capped at 1 MiB per chunk: the code rejects a frame that declares more than 1 MiB before decompressing, because python-zstandard trusts a declared size over `max_output_size` ([docs](https://python-zstandard.readthedocs.io/en/latest/decompressor.html)),
   - a separate compress-or-not decision per chunk, so mixed files are handled correctly.
 - **Verdict: CHANGE to per-chunk processing.**
 
@@ -57,7 +57,7 @@ Details:
 - **Counter:** Every upload is encrypted with fresh random keys and nonces, so identical files are stored twice. There is no deduplication.
 - **Alternative:** Convergent encryption, where the key is derived from the file content so identical files encrypt identically.
 - **Counter to the alternative:** It lets anyone confirm whether a known file is stored. Tahoe-LAFS mixes a per-client "convergence secret" into the key for exactly this reason ([Tahoe-LAFS config docs](https://tahoe-lafs.readthedocs.io/en/latest/configuration.html)).
-- **Verdict: KEEP hashing the ciphertext.** There is no deduplication *across users*. Deduplication *across versions of the same file* is added in §14. Also change `file_id` from `sha256(plaintext)` to a **random UUID**, because a plaintext hash leaks the same confirmation information. The plaintext SHA-256 is stored only inside the encrypted manifest.
+- **Verdict: KEEP hashing the ciphertext.** There is no deduplication *across users*. Deduplication *across versions of the same file* is added in §14. Also change `file_id` from `sha256(plaintext)` to a **random UUID**, because a plaintext hash leaks the same confirmation information. Peers only ever see the plaintext SHA-256 inside the encrypted manifest. On the owner's own laptop it also appears in the local catalog cache and in the download's `X-File-SHA256` header.
 
 ## 5. Keys come from a passphrase, not a key file on one laptop
 
@@ -115,7 +115,7 @@ How metadata is stored:
   - **Eligible peers:** alive, quota ≥ 2 MiB free, and a host_id that doesn't already hold a copy.
   - **Tier 1:** healthy peers. **Tier 2:** slow peers. A peer moves to tier 2 when its transfer-time average stays above 3× the cluster median for 30 s, and back after 30 s at or below it. A tier-2 peer gets no traffic, so every 10 s each node fetches one chunk it holds as a fresh measurement; otherwise it could never leave tier 2.
   - Within a tier, each peer's rank key is `-w / ln(u)`, where:
-    - `u = (int.from_bytes(sha256(chunk_id + node_id)[:8]) + 0.5) / 2**64`, so `u` is strictly between 0 and 1,
+    - `u = (int.from_bytes(sha256(f"{chunk_id}:{node_id}")[:8]) + 0.5) / 2**64`, so `u` is strictly between 0 and 1,
     - `w` is a fixed capacity weight, always greater than 0.
   - Fill the 3 copies from tier 1 first. **Result in the demo: the slow peer gets 0 new chunks.**
 - **About the original math:** `score * (-1/ln x)` *is* the correct weighted form. It breaks only when the score is ≤ 0, which the original formula allows. It can also hit `ln(0)` if the hash prefix is all zeros, and the comment calling its output "(0, 1]" was wrong.
@@ -129,7 +129,7 @@ How metadata is stored:
   - The result is in seconds, so there are no weights to defend.
   - A peer whose transfer just failed goes to the back of the line for 15 s.
 - **Counter to the new design:** A new peer has no transfer history.
-- **Defense:** Start new peers from the cluster median.
+- **Defense:** Start new peers from the cluster median for ranking. (The hedge delay uses fixed defaults of 10 ms and 10 MiB/s for a peer with no samples.)
 - **Option: hedged reads.** If a request takes longer than 2× its ETA, also ask the next holder and use whichever verified reply arrives first. This idea comes from Dean & Barroso, "The Tail at Scale" ([summary](https://blog.acolyer.org/2015/01/15/the-tail-at-scale/)). It adds load only for the slow outliers.
 - **Verdict: CHANGE.** **Prove it with an A/B test:** ETA ordering vs picking a random holder, with one node given `SIMULATED_DELAY_MS=300`, 5 runs each, report the median and min/max.
 
@@ -148,7 +148,7 @@ How metadata is stored:
 
 - **Counter to the original:** If the uploader is offline, nothing gets repaired.
 - **New design:** Every 10 s, each node checks every chunk it holds and counts the chunk's live holders. If there are fewer than 3:
-  1. The **leader** for that chunk is the live holder with the highest rendezvous key. Every holder computes the same leader.
+  1. The **leader** for that chunk is the live holder with the highest unweighted rendezvous value `u`. Every holder computes the same leader.
   2. The leader picks the best eligible peer that doesn't hold the chunk.
   3. It sends `HEAD` to confirm the target is missing the chunk, then `PUT`s it, then `HEAD`s again to verify.
 - **Counter to the new design:**
@@ -157,7 +157,7 @@ How metadata is stored:
 - **Defense:**
   - `PUT` is idempotent because chunks are content-addressed, so a duplicate copy is harmless. The chunk is over-replicated, **never** under-replicated.
   - If a chunk is still short after 2 rounds, the next-ranked holder takes over as leader.
-  - Repair starts only after a peer has been dead for 20 s, so a flapping peer doesn't cause a storm of copies.
+  - Repair starts only once a peer is marked dead, which takes 20 s of silence, and waits while any holder is merely suspect, so a flapping peer doesn't cause a storm of copies.
   - Concurrent repair copies per node are limited.
 - **Honest limits:**
   - If only 2 hosts are alive, 3 copies on 3 different hosts is impossible. The chunk shows as **degraded**.
@@ -174,7 +174,7 @@ How metadata is stored:
   - Per-node disk quota; a full node returns `507`.
   - Body size caps: chunk ≤ 1 MiB + 64 B, upload ≤ 256 MiB, otherwise `413`. FastAPI and Starlette have no default cap ([starlette#2155](https://github.com/encode/starlette/issues/2155)).
   - No peer `DELETE` endpoint.
-  - The user API listens on localhost only.
+  - The user API shares the node's port (which binds `0.0.0.0`), but every user route rejects callers other than localhost with 403. `USER_API_ALLOW` can add specific addresses; it is only for Docker's gateway. The dashboard's static files at `/ui` carry no data and are served to anyone.
 - **Counter:** One leaked laptop exposes the shared key.
 - **Defense:** Per-node identities with mutual TLS are the better design (*planned*). The data itself is client-side encrypted, so a peer only ever holds ciphertext.
 - **Verdict: CHANGE.**
@@ -187,8 +187,8 @@ How metadata is stored:
 | Disk exhaustion or huge upload | Quota (507) and body caps (413) | MVP |
 | Decompression bomb | `max_output_size = 1 MiB` per chunk | MVP |
 | Index tampering or rollback | Ed25519 signature, take the highest version across holders | MVP (rollback only reduced) |
-| Peer claims to store data it deleted | HEAD checks plus random GET-and-hash spot checks; `POST /audit` challenge | Spot checks MVP, audit *planned* |
-| Fake free-space claims | Only verified stored copies count; a failed PUT starts a cooldown | MVP |
+| Peer claims to store data it deleted | HEAD before and after every repair copy; every download re-hashes; slow-tier peers get a GET-and-hash probe every 10 s; `POST /audit` challenge | Partial; general spot checks and audit *planned* |
+| Fake free-space claims | A copy counts only after the storing peer re-hashes it and sends a signed 201 (repair also re-checks with HEAD); a failed PUT marks the peer suspect, which keeps it out of placement until its next good heartbeat. Advertised free space itself is not verified | Partial |
 | Replay within 30 s | Only idempotent requests are affected | Acknowledged |
 | Sybil attack | Closed membership via the cluster key | MVP (not open-network safe) |
 | Traffic sniffing | Payloads are already ciphertext; TLS *planned* | Partial |
@@ -209,7 +209,7 @@ This is the same idea as our production delta OTA pipeline, which shipped a 21.6
 - **Pick:**
   - A new version of a file reuses that file's DEK.
   - Each chunk's nonce is `HMAC(nonce_key, flag || plaintext)[:12]` (nonce key derived from the DEK, see §3), so an unchanged chunk encrypts to exactly the same bytes and gets the same chunk ID.
-  - Before uploading a chunk, check the location map. If the chunk already has ≥ 3 live copies on distinct hosts, skip it.
+  - Before uploading a chunk, check the location map. Copies that already exist on live distinct hosts count toward the 3, and only the missing copies are sent. A chunk with 3 such copies is skipped entirely, and a re-upload tops up a chunk that lost copies.
 - **Counter 1: a deterministic nonce is dangerous with AES-GCM.**
   - GCM breaks only when one (key, nonce) pair encrypts *different* plaintexts.
   - Here the nonce is derived from the plaintext under a secret key, so the same nonce implies the same plaintext and the result is identical ciphertext.

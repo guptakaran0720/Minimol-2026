@@ -22,11 +22,11 @@ From a 4-node Docker cluster on one laptop, with real encryption and compression
 | | |
 |---|---|
 | 20 MB CSV after compression + encryption | **0.30×** its size |
-| Download, fastest holder vs random holder | **11.6×** faster (0.146 s vs 1.697 s) |
+| Download, ETA ranking + hedged reads vs random holder | **11.6×** faster (0.146 s vs 1.697 s) |
 | Copies on the slow peer, smart vs random placement | **0%** vs 21.7% |
 | Re-upload after a 1% append to 20 MB | **0.19 MB** sent |
 | From a node dying to every chunk back at 3 copies | **about 20–40 s** |
-| Tests | 164 passed, plus a live 4-node cluster test |
+| Tests | 166 passed, plus a live 4-node cluster test |
 
 ## Run it
 
