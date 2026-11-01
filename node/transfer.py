@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import time
 import uuid
@@ -41,6 +42,8 @@ from node.routing import (
     rank_for_retrieval,
     rank_for_retrieval_baseline,
 )
+
+log = logging.getLogger(__name__)
 
 MANIFEST_SIZE_HINT = 64 * 1024
 # The baselines exist only so bench.py can A/B the real strategies against them.
@@ -81,6 +84,8 @@ class Transfer:
         self.hedge_factor = hedge_factor
         self.hedge_min_s = hedge_min_s
         self.hedges_fired = 0
+        self.unrecovered: list[str] = []      # manifest ids the last recover() could not fetch
+        self.last_index_acks = 0              # peers that accepted the last published owner index
         self.keys = keys
         self.codec = codec
         self.peers = peers
@@ -162,7 +167,9 @@ class Transfer:
                 "sha256": manifest.sha256,
                 "chunk_ids": [r["chunk_id"] for r in rows],
             }
-            await self._publish_index()
+            self.last_index_acks = await self._publish_index()
+            if self.last_index_acks == 0:
+                log.warning("no peer accepted owner index v%d; this upload is only in the local catalog", self.index_version)
             self._save_catalog()
 
         copies = [len(h) for _, h, _ in placed] + [len(manifest_holders)]
@@ -345,7 +352,10 @@ class Transfer:
         return sum(await asyncio.gather(*(push(p) for p in self.peers.alive())))
 
     async def recover(self) -> int:
-        """Rebuild the catalog from peers using only the owner's keys. Returns file count."""
+        """Rebuild the catalog from peers using only the owner's keys. Returns files restored.
+
+        A manifest that no reachable peer can serve is skipped, not fatal: the rest are
+        restored and the missing ids are kept in self.unrecovered for the caller to report."""
         owner = self.keys.sign_pub.hex()
         alive = self.peers.alive()
         records = await asyncio.gather(*(self.client.get_index(p, owner) for p in alive), return_exceptions=True)
@@ -362,10 +372,12 @@ class Transfer:
         if best is None:
             return 0
         manifest_ids = self.codec.open_index(best, self.keys)
-        manifests = await asyncio.gather(*(self._load_manifest(mid) for mid in manifest_ids))
+        loaded = await asyncio.gather(*(self._load_manifest(mid) for mid in manifest_ids), return_exceptions=True)
+        self.unrecovered = [mid for mid, m in zip(manifest_ids, loaded) if not isinstance(m, Manifest)]
+        restored = [(mid, m) for mid, m in zip(manifest_ids, loaded) if isinstance(m, Manifest)]
         async with self._catalog_lock:
             self.index_version = max(self.index_version, best_version)
-            for mid, m in zip(manifest_ids, manifests):
+            for mid, m in restored:
                 self.catalog[m.file_uuid] = {
                     "file_uuid": m.file_uuid,
                     "name": m.name,
@@ -376,7 +388,7 @@ class Transfer:
                     "chunk_ids": [c["chunk_id"] for c in sorted(m.chunks, key=lambda c: c["index"])],
                 }
             self._save_catalog()
-        return len(manifest_ids)
+        return len(restored)
 
     # ---------- health views for the dashboard ----------
 

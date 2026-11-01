@@ -8,3 +8,4 @@ wheels/
 ui/node_modules/
 ui/dist/
 bench/results/
+docs/deck/node_modules/

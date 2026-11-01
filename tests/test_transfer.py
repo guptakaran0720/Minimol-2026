@@ -329,3 +329,26 @@ def test_random_baseline_is_never_hedged():
     out = io.BytesIO()
     run(t.download(res.file_uuid, out, "random"))
     assert out.getvalue() == data and t.hedges_fired == 0
+
+
+def test_recover_skips_a_manifest_no_peer_can_serve():
+    net, table, client, locs, codec, t = setup()
+    a = up(t, os.urandom(CHUNK * 2), "a.bin")
+    b = up(t, os.urandom(CHUNK * 2), "b.bin")
+    for store in net.stores.values():          # every copy of a's manifest is gone
+        store.pop(a.manifest_id, None)
+    fresh = Transfer(keys_for(codec), codec, table, client, locs, chunk_size=CHUNK)
+    assert run(fresh.recover()) == 1
+    assert fresh.unrecovered == [a.manifest_id]
+    assert list(fresh.catalog) == [b.file_uuid]
+
+
+def test_upload_reports_how_many_peers_took_the_index():
+    net, table, client, locs, codec, t = setup()
+    up(t, b"x" * 3000, "a")
+    assert t.last_index_acks == 4
+    owner = t.keys.sign_pub.hex()
+    for slot in net.indexes.values():           # another device already published a newer list
+        slot[owner] = {"version": 10**6, "ids": [], "sig": owner}
+    up(t, b"y" * 3000, "b")
+    assert t.last_index_acks == 0

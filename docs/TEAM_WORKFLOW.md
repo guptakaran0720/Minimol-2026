@@ -61,7 +61,7 @@ Points everyone must match:
 
 There is **no** DELETE route.
 
-**User API (P3):** bound to `127.0.0.1` only.
+**User API (P3):** served on the node's port, but every route answers only localhost callers (403 otherwise; `USER_API_ALLOW` is for Docker only).
 
 | Method | Path |
 |---|---|

@@ -144,6 +144,7 @@ def test_stats_shows_dead_peers_and_repair(cluster, tmp_path):
     assert {p["node_id"]: p["state"] for p in stats["peers"]}["node3"] == "dead"
     assert stats["files"]["count"] == 1
     assert stats["repair"]["total_copies"] == 0
+    assert c.post("/files?name=g", content=b"z" * 10).json()["index_acks"] == 3   # node3 is dead
 
 
 def node_like(cluster, tmp_path):

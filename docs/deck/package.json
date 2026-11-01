@@ -1,0 +1,13 @@
+{
+  "name": "minimol-deck",
+  "private": true,
+  "description": "Builds docs/Minimol_Storage_Pitch.pptx: npm ci && npm run build",
+  "scripts": { "build": "node build_deck.js" },
+  "dependencies": {
+    "pptxgenjs": "3.12.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-icons": "5.3.0",
+    "sharp": "0.33.5"
+  }
+}
