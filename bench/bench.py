@@ -273,8 +273,21 @@ def placement_counts(res: dict) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def wait_for_slow_tier(b, slow: str, timeout: float = 120) -> dict:
+    """P2 moves a peer to tier 2 only after its ETA stays > 3x the median for 30 s,
+    and ETA needs real transfer samples, so give it time before the placement A/B."""
+    t0 = time.perf_counter()
+    while True:
+        tier = next((p.get("tier") for p in b.peers() if p["node_id"] == slow), None)
+        waited = time.perf_counter() - t0
+        if tier == 2 or waited >= timeout:
+            return {"slow_node_tier": tier, "waited_s": round(waited, 1)}
+        b.upload(make_random(2 * MB, seed=int(waited)), f"bench-warmup-{int(waited)}")   # generate transfer samples
+        time.sleep(2)
+
+
 def bench_placement(b, data: bytes, slow: str | None, reps: int, run_id: str) -> dict:
-    out = {}
+    out = {"warmup": wait_for_slow_tier(b, slow)} if slow else {}
     for strategy in ("tiered", "random"):
         shares, downs, counts = [], [], {}
         for r in range(reps):
@@ -345,9 +358,13 @@ def report(r: dict) -> str:
                   f"| {d['v2_bytes'] / MB:.2f} | {d['v2_sent_bytes'] / MB:.3f} | {fmt(d['delta_sent_fraction'], 4)} | "
                   f"{d['v2_sent_chunks']} / {d['v2_reused_chunks']} | {'match' if d['sha256_match'] else 'MISMATCH'} |"]
     if p := r.get("placement"):
+        w = p.get("warmup", {})
         lines += ["", "### Placement A/B: tiered vs random", "",
+                  f"Slow node tier before the A/B: {w.get('slow_node_tier', '—')} (waited {w.get('waited_s', 0)} s).", "",
                   "| Strategy | Share of copies on slow node | Download s | Copies per node (last run) |", "|---|---|---|---|"]
         for s, v in p.items():
+            if s == "warmup":
+                continue
             lines.append(f"| {s} | {fmt(v['slow_node_share'])} | {fmt(v['download_s'])} | {v['copies_per_node_last_run']} |")
     if q := r.get("retrieval"):
         lines += ["", "### Retrieval A/B: ETA ordering vs random holder (file placed randomly)", "",
