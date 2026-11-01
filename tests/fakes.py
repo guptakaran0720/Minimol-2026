@@ -87,6 +87,9 @@ class FakePeerTable:
     def alive(self):
         return [p for p in self.peers.values() if p.state == "alive"]
 
+    def all(self):          # proposed contract addition, used by /stats
+        return list(self.peers.values())
+
     def get(self, node_id):
         return self.peers.get(node_id)
 

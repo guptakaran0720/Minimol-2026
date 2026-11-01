@@ -65,12 +65,12 @@ There is **no** DELETE route.
 
 | Method | Path |
 |---|---|
-| POST | `/files` |
+| POST | `/files?name=<name>` (raw file bytes as the body, ≤ 256 MiB, else 413) |
 | GET | `/files` |
-| GET | `/files/{uuid}` |
+| GET | `/files/{uuid}` (served only after the whole-file SHA-256 matches; header `X-File-SHA256`) |
 | GET | `/files/{uuid}/map` |
-| GET | `/stats` |
-| POST | `/recover` (body: `{username, passphrase}`) |
+| GET | `/stats` (works while locked; feeds the dashboard) |
+| POST | `/recover` (body: `{username, passphrase}`; unlocks the node and pulls the owner index. Every other route returns 401 until this succeeds) |
 
 ## How each builder works without waiting on the others
 
