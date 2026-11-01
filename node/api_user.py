@@ -140,7 +140,8 @@ def create_router(source) -> APIRouter:
         )
         restored = await transfer.recover()
         s.transfer, s.username = transfer, username
-        return {"username": username, "files_restored": restored, "files": transfer.list_files()}
+        return {"username": username, "files_restored": restored,
+                "files_unavailable": len(transfer.unrecovered), "files": transfer.list_files()}
 
     @router.post("/files", status_code=201)
     async def upload(

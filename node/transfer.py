@@ -81,6 +81,7 @@ class Transfer:
         self.hedge_factor = hedge_factor
         self.hedge_min_s = hedge_min_s
         self.hedges_fired = 0
+        self.unrecovered: list[str] = []      # manifest ids the last recover() could not fetch
         self.keys = keys
         self.codec = codec
         self.peers = peers
@@ -345,7 +346,10 @@ class Transfer:
         return sum(await asyncio.gather(*(push(p) for p in self.peers.alive())))
 
     async def recover(self) -> int:
-        """Rebuild the catalog from peers using only the owner's keys. Returns file count."""
+        """Rebuild the catalog from peers using only the owner's keys. Returns files restored.
+
+        A manifest that no reachable peer can serve is skipped, not fatal: the rest are
+        restored and the missing ids are kept in self.unrecovered for the caller to report."""
         owner = self.keys.sign_pub.hex()
         alive = self.peers.alive()
         records = await asyncio.gather(*(self.client.get_index(p, owner) for p in alive), return_exceptions=True)
@@ -362,10 +366,12 @@ class Transfer:
         if best is None:
             return 0
         manifest_ids = self.codec.open_index(best, self.keys)
-        manifests = await asyncio.gather(*(self._load_manifest(mid) for mid in manifest_ids))
+        loaded = await asyncio.gather(*(self._load_manifest(mid) for mid in manifest_ids), return_exceptions=True)
+        self.unrecovered = [mid for mid, m in zip(manifest_ids, loaded) if not isinstance(m, Manifest)]
+        restored = [(mid, m) for mid, m in zip(manifest_ids, loaded) if isinstance(m, Manifest)]
         async with self._catalog_lock:
             self.index_version = max(self.index_version, best_version)
-            for mid, m in zip(manifest_ids, manifests):
+            for mid, m in restored:
                 self.catalog[m.file_uuid] = {
                     "file_uuid": m.file_uuid,
                     "name": m.name,
@@ -376,7 +382,7 @@ class Transfer:
                     "chunk_ids": [c["chunk_id"] for c in sorted(m.chunks, key=lambda c: c["index"])],
                 }
             self._save_catalog()
-        return len(manifest_ids)
+        return len(restored)
 
     # ---------- health views for the dashboard ----------
 
