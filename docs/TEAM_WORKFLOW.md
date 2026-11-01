@@ -160,7 +160,7 @@ P4 also owns:
 | mDNS blocked | Seed list + gossip (always on) |
 | Firewall blocks port 8000 | Allow Python in the OS firewall; try port 8080; plan B: local cluster |
 | One laptop missing | Run 2 nodes on one laptop **with different host_id**, and say so |
-| Laptops can't reach each other | `scripts/run_cluster.sh` on one laptop; state it on stage |
+| Laptops can't reach each other | `docker compose up -d` (4 containers, dashboard at `localhost:8001/ui/`, see [DOCKER.md](DOCKER.md)) or `scripts/run_cluster.sh` on one laptop; state it on stage |
 | Repair not finished | Demo replica fallback only; show repair as "planned" |
 | Dashboard broken | `curl /stats \| python -m json.tool` + terminal logs |
 | Live demo fails | Play the backup video, then show test output |

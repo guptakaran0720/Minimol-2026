@@ -16,3 +16,20 @@ jobs:
         run: pip install -r requirements.txt -r requirements-dev.txt
       - name: Run tests (exit code 5 = no tests collected yet, allowed)
         run: pytest -q || [ $? -eq 5 ]
+
+  ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Type-check and build
+        run: npm run build

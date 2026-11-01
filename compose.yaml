@@ -1,0 +1,52 @@
+# Four nodes on one Docker network, each its own container and host_id.
+#   docker compose up -d --build          dashboard: http://localhost:8001/ui/ (any of 8001-8004)
+#   DELAY_MS=300 docker compose up -d     node-4 answers every peer request 300 ms late (simulated)
+#   docker compose stop node2             kill a node; `start` brings it back
+#   docker compose run --rm unit          pytest on Python 3.11
+#   scripts/docker_e2e.sh                 cluster test + live bench against this stack
+name: minimol
+
+x-node: &node
+  build: { context: ., target: node }
+  image: minimol-node:dev
+  networks: [p2p]
+  restart: "no"
+
+x-env: &env
+  CLUSTER_KEY: docker-dev-cluster-key-not-secret
+  SEEDS: node1:8000
+  QUOTA_MB: "1024"
+  # Published ports reach the container from a gateway address, not 127.0.0.1:
+  # 172.28.0.1 on Linux, 192.168.65.1 on Docker Desktop. Ports are bound to the
+  # host's 127.0.0.1 below, so only this machine can use them. Never a LAN range.
+  USER_API_ALLOW: 172.28.0.1/32,192.168.65.1/32
+
+services:
+  node1:
+    <<: *node
+    environment: { <<: *env, NODE_ID: node-1, HOST_ID: host-1, ADVERTISE_ADDR: "node1:8000" }
+    ports: ["127.0.0.1:8001:8000"]
+  node2:
+    <<: *node
+    environment: { <<: *env, NODE_ID: node-2, HOST_ID: host-2, ADVERTISE_ADDR: "node2:8000" }
+    ports: ["127.0.0.1:8002:8000"]
+  node3:
+    <<: *node
+    environment: { <<: *env, NODE_ID: node-3, HOST_ID: host-3, ADVERTISE_ADDR: "node3:8000" }
+    ports: ["127.0.0.1:8003:8000"]
+  node4:
+    <<: *node
+    environment:
+      { <<: *env, NODE_ID: node-4, HOST_ID: host-4, ADVERTISE_ADDR: "node4:8000", SIMULATED_DELAY_MS: "${DELAY_MS:-0}" }
+    ports: ["127.0.0.1:8004:8000"]
+  unit:
+    build: { context: ., target: test }
+    image: minimol-test:dev
+    profiles: [test]
+    network_mode: none
+
+networks:
+  p2p:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

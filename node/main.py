@@ -15,15 +15,19 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from node import config
 from node.api_peer import create_peer_app
 from node.chunkstore import DiskChunkStore, IndexStore
-from node.config import Settings
+from node.config import Settings, user_api_client_ok
 from node.contracts import Peer
 from node.discovery import MdnsDiscovery, add_seeds, gossip_once
 from node.inventory import LocationMap, inventory_once
@@ -31,7 +35,7 @@ from node.peer_client import HttpPeerClient
 from node.peers import PeerTable, heartbeat_once
 
 log = logging.getLogger("node")
-LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
+UI_DIST = Path(__file__).resolve().parent.parent / "ui" / "dist"
 
 
 @dataclass
@@ -81,9 +85,12 @@ async def _every(interval: float, name: str, fn) -> None:
         await asyncio.sleep(interval)
 
 
-def localhost_only(request: Request) -> None:
-    if request.client is None or request.client.host not in LOCAL_HOSTS:
-        raise HTTPException(403, "user API is only served to localhost")
+def localhost_only(settings: Settings):
+    def check(request: Request) -> None:
+        host = request.client.host if request.client else None
+        if not user_api_client_ok(host, settings.user_api_allow):
+            raise HTTPException(403, f"user API is only served to localhost (request from {host}; see USER_API_ALLOW)")
+    return check
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -130,7 +137,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     create_router = _optional("node.api_user", "create_router")
     if create_router is not None:
-        app.include_router(create_router(node), dependencies=[Depends(localhost_only)])
+        app.include_router(create_router(node), dependencies=[Depends(localhost_only(settings))])
+
+    ui_dir = Path(os.environ.get("UI_DIR", UI_DIST))
+    if (ui_dir / "index.html").exists():
+        # Static files only; the data they show comes from the localhost-only user API.
+        app.mount("/ui", StaticFiles(directory=ui_dir, html=True), name="ui")
+        app.add_api_route("/", lambda: RedirectResponse("/ui/"), include_in_schema=False)
+    else:
+        log.info("dashboard not built (%s missing): run `npm run build` in ui/", ui_dir / "index.html")
     return app
 
 
