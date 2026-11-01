@@ -834,6 +834,22 @@
 
 ---
 
+**Q109. You only have three laptops, so every chunk is on all three. Where's the smart placement?** · *Owner: P3*
+- **Answer:** Right: with 3 laptops and 3 copies, placement has no choice to make, and we say so. The routing proof is the 4-node Docker A/B: tiered placement put 0% of copies on a slow node versus 21.7% random, and ETA ranking with hedged reads downloaded 11.6× faster than a random holder. **[D]**
+- **Follow-up:** So the live demo doesn't show routing at all?
+- **Response:** It shows retrieval routing in a small way (each download picks the fastest holder, usually this laptop), but the measured comparison is on the slide. Add a fourth laptop or the Docker cluster and placement becomes visible.
+- **Show:** Slides 6–7; RESULTS.md Run 1; `test_slow_tier_never_chosen_while_three_healthy_hosts_exist`.
+- **Admit:** The routing numbers come from one machine with a simulated delay.
+
+**Q110. On three laptops, what did you actually measure?** · *Owner: P4*
+- **Answer:** Every laptop ran the same self-test and passed it: compression 0.30×, every chunk on 3 laptops, SHA-256 match on every download, a flipped byte caught, wrong passphrase and wrong cluster key rejected, delta sync 0.85% sent for a 1% edit. With a laptop switched off, 8 of 8 files still downloaded; when it came back, a file uploaded meanwhile was healthy 6 s later; an empty replacement laptop was refilled in about 19 s.
+- **Follow-up:** How long does it take to notice a dead laptop?
+- **Response:** About 20 s of silence: in that run it went suspect at 14:45:26 and dead at 14:45:35.
+- **Show:** RESULTS.md Run 3; slide 12.
+- **Admit:** Three laptops on one campus network, one afternoon; no long-duration or many-user test.
+
+---
+
 ## 20 hardest exchanges
 
 Format: **J** = judge, **U** = us. "Weakness" is what a sharp judge finds in our first answer. "Best answer" is the position we can defend to the end. "Concede when" says when to stop defending.

@@ -142,7 +142,7 @@ async function build() {
       x: M, y: 4.35, w: 6.6, h: 1.3, fontSize: 18, color: C.text2, lineSpacingMultiple: 1.15,
     });
     block(s, M, 5.85, 2.55, 0.62, C.accent5, { noLine: true, radius: 0.31 });
-    text(s, "Live demo · 4 nodes", { x: M, y: 5.85, w: 2.55, h: 0.62, fontSize: 15, bold: true, color: C.background1, align: "center", valign: "middle" });
+    text(s, "Live demo · 3 laptops", { x: M, y: 5.85, w: 2.55, h: 0.62, fontSize: 15, bold: true, color: C.background1, align: "center", valign: "middle" });
     block(s, M + 2.8, 5.85, 2.9, 0.62, C.background1, { radius: 0.31 });
     text(s, "Python · React · Docker", { x: M + 2.8, y: 5.85, w: 2.9, h: 0.62, fontSize: 15, color: C.accent5, align: "center", valign: "middle" });
 
@@ -159,7 +159,7 @@ async function build() {
     [C.accent1, C.accent2, C.accent3, C.accent4].forEach((c, i) =>
       s.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: gx + 1.45 + i * 0.42, y: gy + 2 * bw + gap + 0.35, w: 0.34, h: 0.08, rectRadius: 0.04, fill: { color: c }, line: { type: "none" }, objectName: name("dash") }),
     );
-    text(s, "4 laptops. One drive.", { x: gx + 3.2, y: gy + 2 * bw + gap + 0.24, w: 2.4, h: 0.3, fontSize: 12, color: C.text2 });
+    text(s, "Your laptops. One drive.", { x: gx + 3.2, y: gy + 2 * bw + gap + 0.24, w: 2.4, h: 0.3, fontSize: 12, color: C.text2 });
     s.addNotes("Open with the promise in three words: store, survive, heal. One sentence on what it is, then go straight to the problem. About 20 seconds.");
   }
 
@@ -495,7 +495,7 @@ async function build() {
   pres.addSection({ title: "Context" });
   {
     const s = content("Context", t("Where we ", "fit", C.accent1),
-      "Be generous to the others: Tahoe-LAFS is the closest design and we borrowed its ideas. Our difference is the combination on four laptops: client-side compression, measured routing, owner-independent repair, and passphrase recovery.");
+      "Be generous to the others: Tahoe-LAFS is the closest design and we borrowed its ideas. Our difference is the combination on a few ordinary laptops: client-side compression, measured routing, owner-independent repair, and passphrase recovery.");
     const head = (txt) => ({ text: txt, options: { bold: true, color: HEX.paper, fill: { color: HEX.ink }, fontSize: 14 } });
     const row = (sys, model, gap, highlight) => [
       { text: sys, options: { bold: true, fontSize: 14, color: HEX.ink, fill: { color: highlight ? HEX.blueTint : HEX.paper } } },
@@ -520,16 +520,16 @@ async function build() {
   // ===== 13. Demo =====
   {
     const s = content("Context", t("What you'll see ", "live", C.accent2),
-      "Read the steps as a promise, then do them. If the network misbehaves, switch to the Docker cluster on one laptop and say so.");
+      "Read the steps as a promise, then do them, following docs/DEMO_SCRIPT.md. Smart routing is not on this list because with 3 laptops every chunk must be on all three; it is on slides 6 and 7. If the network misbehaves, switch to the Docker cluster on one laptop and say so.");
     const steps = [
-      "Upload a 20 MB log: watch it shrink and spread to 3 laptops",
+      "Upload a log: it shrinks to about 30% and spreads to 3 laptops",
       "Upload a photo: compression is skipped, it is already compressed",
-      "Slow one laptop down: new chunks avoid it, downloads route around it",
-      "Close a laptop lid: download the file anyway, SHA-256 matches",
-      "Watch the dashboard turn red, then green: repair is automatic",
-      "Kill a second original holder: it still downloads",
-      "Append to the log and re-upload: only the changed chunk travels",
-      "Open a fresh laptop: username + passphrase recover everything",
+      "Show a stored piece: unreadable, and named by its own hash",
+      "Switch a laptop off: the file still downloads, SHA-256 matches",
+      "Watch it turn red: files are honestly marked degraded",
+      "Switch it back on: missing copies refilled, healthy in seconds",
+      "Append to the log and re-upload: only the changed piece travels",
+      "Brand-new laptop: username + passphrase recover everything",
     ];
     const colors = [C.accent1, C.accent2, C.accent3, C.accent4];
     const cw = 5.9, rh = 1.12;
