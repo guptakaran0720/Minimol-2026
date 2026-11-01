@@ -6,11 +6,20 @@ docs/ARCHITECTURE_DECISIONS.md.
 """
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Protocol
 
 CHUNK_SIZE = 1024 * 1024
 REPLICATION = 3
+
+
+def owner_salt(username: str) -> bytes:
+    """scrypt salt for derive_master. Fixed by contract so a fresh laptop can
+    re-derive the same keys from username + passphrase alone (section 5).
+    The username keeps two users with the same passphrase apart."""
+    return hashlib.sha256(b"minimol-2026/owner-salt/v1|" + username.encode("utf-8")).digest()
 
 
 # ---- P1: pure functions, no networking (node/pipeline.py, keys.py, manifest.py, index.py) ----
@@ -39,20 +48,24 @@ class Manifest:
     sha256: str          # of the original plaintext file
     wrapped_dek: bytes
     chunks: list[dict]   # {index, chunk_id, plain_size, compressed}
-    version: int = 1     # bumps on every re-upload of the same file (delta sync)
+    version: int = 1     # bumps on every re-upload of the same file (delta sync);
+                         # the owner index keeps only the latest manifest per file_uuid
 
 
 class Codec(Protocol):
     """P1's functions, grouped so P3 can inject fakes in tests.
 
-    encode_file uses a synthetic nonce HMAC(dek, flag || plaintext)[:12] and
+    encode_chunk takes one plaintext chunk (<= CHUNK_SIZE), so callers read the
+    file one chunk at a time and memory stays at one chunk (section 3). It uses a
+    synthetic nonce HMAC(nonce_key, flag || plaintext)[:12], where
+    nonce_key = HKDF-SHA256(dek, info=b"minimol-2026/nonce/v1"), and
     AAD = file_uuid || flag, so identical chunks of one file always produce
     identical blobs (delta sync, ARCHITECTURE_DECISIONS.md section 14).
     """
-    def encode_file(self, data: bytes, file_uuid: str, dek: bytes) -> list[EncodedChunk]: ...
+    def encode_chunk(self, plain: bytes, index: int, file_uuid: str, dek: bytes) -> EncodedChunk: ...
     def decode_chunk(self, blob: bytes, file_uuid: str, compressed: bool, dek: bytes) -> bytes: ...
     def sha256_hex(self, b: bytes) -> str: ...
-    def derive_master(self, passphrase: str, salt: bytes) -> MasterKeys: ...
+    def derive_master(self, passphrase: str, salt: bytes) -> MasterKeys: ...  # salt = owner_salt(username)
     def wrap_key(self, kek: bytes, dek: bytes) -> bytes: ...
     def unwrap_key(self, kek: bytes, wrapped: bytes) -> bytes: ...
     def seal_manifest(self, m: Manifest, kek: bytes) -> bytes: ...     # manifest_id = sha256(blob)
@@ -78,6 +91,7 @@ class ChunkStore(Protocol):
     def has(self, chunk_id: str) -> bool: ...
     def list_ids(self) -> list[str]: ...
     def used_bytes(self) -> int: ...
+    def free_bytes(self) -> int: ...   # quota - used_bytes; reported by /health
 
 
 @dataclass
@@ -102,7 +116,8 @@ class PeerTable(Protocol):
 
 
 class PeerClient(Protocol):
-    """Every call is HMAC-signed. Connect timeout 1 s, read timeout 5 s.
+    """Every call is HMAC-signed over method|path|node_id|ts|sha256(body).
+    Connect timeout 1 s, read timeout 5 s.
     Network errors raise; callers treat any exception as a failed transfer."""
     async def put_chunk(self, peer: Peer, chunk_id: str, blob: bytes) -> bool: ...
     async def get_chunk(self, peer: Peer, chunk_id: str) -> bytes | None: ...
@@ -117,14 +132,19 @@ class LocationMap(Protocol):
     until their inventory is dropped, so repair can see the missing copy."""
     def holders(self, chunk_id: str) -> set[str]: ...       # node_ids
     def note(self, chunk_id: str, node_id: str) -> None: ...  # record a copy we just stored
+    def replace_inventory(self, node_id: str, chunk_ids: Iterable[str]) -> None: ...  # after a /inventory poll
+    def forget(self, node_id: str) -> None: ...              # drop a peer's inventory entirely
 
 
 # ---- P3: routing + orchestration (node/routing.py, transfer.py, repair.py) ----
 # routing.rank_for_placement(chunk_id, peers, exclude_hosts) -> list[Peer]
 # routing.rank_for_retrieval(holders, size) -> list[Peer]
 # routing.repair_order(chunk_id, live_holder_ids) -> list[str]   (leader = [0])
-# transfer.Transfer.upload(data, name) -> dict
-# transfer.Transfer.download(file_uuid) -> bytes
+# transfer.Transfer.upload(src: BinaryIO, name) -> UploadResult
+#     reads src CHUNK_SIZE at a time; same name as an existing file -> reuse its
+#     file_uuid + DEK, version + 1, and replace the old manifest_id in the index
+# transfer.Transfer.download(file_uuid, dst: BinaryIO) -> Manifest
+#     writes plaintext chunks to dst, then raises if the whole-file SHA-256 mismatches
 # transfer.Transfer.recover() -> int   (number of files restored from peers)
 
 

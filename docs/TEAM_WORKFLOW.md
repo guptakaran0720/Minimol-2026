@@ -19,11 +19,11 @@ Do these in order:
 
 1. Create the venv and install:
    ```bash
-   pip install -r requirements.txt pytest
+   pip install -r requirements.txt -r requirements-dev.txt
    ```
 2. Download wheels in case the internet dies later:
    ```bash
-   pip download -r requirements.txt -d wheels/
+   pip download -r requirements.txt -r requirements-dev.txt -d wheels/
    ```
 3. On **every laptop**, allow Python through the firewall. From another laptop, run `curl http://<ip>:8000/health`.
 4. Write `node/contracts.py` together: the dataclasses and function signatures below, with the bodies left as `...`. After this, **contracts.py is frozen.** Any change needs a PR approved by P1, P2 and P3.
@@ -36,11 +36,17 @@ The source of truth is [`node/contracts.py`](../node/contracts.py). It defines t
 - **P2:** `ChunkStore`, `PeerTable`, `PeerClient`, `LocationMap`.
 - **P3:** `routing`, `transfer.Transfer`, `repair.Repairer`.
 
-Delta sync changed two signatures: `decode_chunk` no longer takes a chunk index, and `encode_file` must use a synthetic nonce (ARCHITECTURE_DECISIONS.md §14).
+Points everyone must match:
+
+- **Per-chunk encoding:** `encode_chunk(plain, index, file_uuid, dek)` replaces `encode_file`. P3 reads the upload `CHUNK_SIZE` at a time, hashes the whole file as it goes, and calls `encode_chunk` per chunk, so memory stays at one chunk (§3).
+- **Synthetic nonce:** `decode_chunk` takes no chunk index, and the nonce is `HMAC(nonce_key, flag || plaintext)[:12]` with `nonce_key = HKDF(DEK)` (§3, §14).
+- **Salt:** `derive_master` is always called with `owner_salt(username)` from `contracts.py` (§5).
+- **Transfer:** `upload(src, name) -> UploadResult` and `download(file_uuid, dst) -> Manifest` stream to and from file objects.
+- **Versions:** re-uploading a file with the same name replaces its manifest ID in the owner index (§7).
 
 ### HTTP API contract
 
-**Peer API (P2):** every route needs the HMAC headers `X-Node`, `X-Ts`, `X-Sig`.
+**Peer API (P2):** every route needs the HMAC headers `X-Node`, `X-Ts`, `X-Sig`, where `X-Sig = HMAC-SHA256(cluster_key, method|path|X-Node|X-Ts|sha256(body))`.
 
 | Method | Path | Response |
 |---|---|---|
@@ -64,7 +70,7 @@ There is **no** DELETE route.
 | GET | `/files/{uuid}` |
 | GET | `/files/{uuid}/map` |
 | GET | `/stats` |
-| POST | `/recover` (body: `{passphrase}`) |
+| POST | `/recover` (body: `{username, passphrase}`) |
 
 ## How each builder works without waiting on the others
 
@@ -81,13 +87,13 @@ There is **no** DELETE route.
 | 13:30–15:00 | index sign/verify + rollback test | peer_client, peers (heartbeat, EWMA), `run_cluster.sh` | transfer.upload/download, api_user | Explain 02 (storage node), 03 (routing); start `RESULTS.md` | **Merge 2 @15:00:** 4 local processes; upload 20 MB → download → SHA-256 matches |
 | 15:00–15:30 | Multi-laptop test, together | ← | ← | ← | Same test passes across 3–4 real laptops |
 | 15:30–17:00 | `ui/index.html` (peers, chunk map, file list, repair counter) | inventory map, gossip, suspect/dead states | download fallback, tiered placement, ETA ordering, `bench.py` | Explain 04 (failure detection), 05 (routing proof); runs first bench | **Merge 3 @17:00:** kill a node mid-download and it still succeeds; delayed node gets 0 new chunks |
-| 17:00–18:30 | `/recover` flow with P3 (P1 writes the key/index parts) | mDNS (optional), quota/413 tests | repair loop + leader takeover + repair tests | Explain 06 (repair), 07 (recovery), 08 (security); `DEMO_SCRIPT.md` | **Merge 4 @18:30:** after a kill, all chunks back to 3 live copies; fresh node recovers files from the passphrase |
+| 17:00–18:30 | `/recover` flow with P3 (P1 writes the key/index parts) | mDNS (optional), quota/413 tests | repair loop + leader takeover + repair tests; then delta sync (same-name re-upload reuses UUID + DEK, skip chunks already on 3 hosts) | Explain 06 (repair), 07 (recovery), 08 (security), 09 (delta sync); `DEMO_SCRIPT.md` | **Merge 4 @18:30:** after a kill, all chunks back to 3 live copies; fresh node recovers files from username + passphrase; appending to a file and re-uploading sends only the changed chunks |
 | **18:30** | **FEATURE FREEZE**: only bug fixes after this | ← | ← | ← | Freeze holds only if Merges 1–3 pass; otherwise cut per the list below |
 | 18:30–19:30 | Bug fixes | Bug fixes | Final bench runs (5 reps) | Fills `RESULTS.md` with **measured** numbers only | — |
 | 19:30–20:30 | Rehearsal ×2 on real laptops; record a backup video | ← | ← | P4 runs the rehearsal and times every step | Demo runs twice without code changes |
 | 20:30–21:00 | Slides review | ← | ← | `SLIDES.md` final, `JUDGE_QA.md` final | — |
 
-**Cut order if behind:** hedged reads → `/recover` → mDNS → dashboard polish. **Never cut** kill-a-node download or repair.
+**Cut order if behind:** hedged reads → delta sync → `/recover` → mDNS → dashboard polish (same as ARCHITECTURE_DECISIONS.md). **Never cut** kill-a-node download or repair.
 
 ## Git workflow
 
@@ -126,6 +132,7 @@ P4 writes one explanation doc within **45 minutes** of each module merging, in `
 | `06-repair.md` | Leader election, idempotent PUT, degraded state | Merge 4 |
 | `07-recovery-and-keys.md` | Passphrase → keys, signed index, new device | Merge 4 |
 | `08-security.md` | Threat table and what AES-GCM does and doesn't protect | Merge 4 |
+| `09-delta-sync.md` | Synthetic nonces, same-file versions, bytes sent vs file size | Merge 4 |
 
 P4 also owns:
 - **`RESULTS.md`:** benchmark table filled only from `bench.py` output, as the median of 5 runs plus min/max.
