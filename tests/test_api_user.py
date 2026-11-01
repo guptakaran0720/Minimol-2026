@@ -1,5 +1,7 @@
 import hashlib
 import os
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -22,11 +24,10 @@ def cluster():
 def make_client(cluster, tmp_path, hosts=("testclient",), repairer=None):
     net, table, client, locs, codec = cluster
     app = FastAPI()
-    app.include_router(api_user.router)
-    app.state.user = UserState(
+    app.include_router(api_user.create_router(UserState(
         codec=codec, peers=table, client=client, locations=locs, data_dir=tmp_path,
-        repairer=repairer, chunk_size=CHUNK, allowed_hosts=set(hosts),
-    )
+        repairer=repairer, chunk_size=CHUNK, allowed_hosts=set(hosts), self_id="node0",
+    )))
     return TestClient(app)
 
 
@@ -143,3 +144,38 @@ def test_stats_shows_dead_peers_and_repair(cluster, tmp_path):
     assert {p["node_id"]: p["state"] for p in stats["peers"]}["node3"] == "dead"
     assert stats["files"]["count"] == 1
     assert stats["repair"]["total_copies"] == 0
+
+
+def node_like(cluster, tmp_path):
+    """Shape of P2's main.Node, which main.py passes to create_router."""
+    net, table, client, locs, codec = cluster
+    return SimpleNamespace(settings=SimpleNamespace(data_dir=tmp_path, node_id="node0"),
+                           peers=table, client=client, locations=locs)
+
+
+def client_for_node(node):
+    app = FastAPI()
+    app.include_router(api_user.create_router(node))
+    return app
+
+
+def test_create_router_from_node_without_p1_is_locked_with_503(cluster, tmp_path, monkeypatch):
+    monkeypatch.delenv("DEV_FAKE_CODEC", raising=False)
+    monkeypatch.setattr(api_user, "LOCAL_HOSTS", {"testclient"})
+    c = TestClient(client_for_node(node_like(cluster, tmp_path)))
+    r = c.post("/recover", json=LOGIN)
+    assert r.status_code == 503 and "P1" in r.json()["detail"]
+    stats = c.get("/stats").json()
+    assert stats["node_id"] == "node0" and "not available" in stats["codec"]
+
+
+def test_create_router_from_node_with_dev_fake_codec(cluster, tmp_path, monkeypatch):
+    monkeypatch.setenv("DEV_FAKE_CODEC", "1")
+    monkeypatch.setattr(api_user, "LOCAL_HOSTS", {"testclient"})
+    c = TestClient(client_for_node(node_like(cluster, tmp_path)))
+    assert c.post("/recover", json=LOGIN).status_code == 200
+    data = os.urandom(3000)
+    file_uuid = c.post("/files?name=x", content=data).json()["file_uuid"]
+    assert c.get(f"/files/{file_uuid}").content == data
+    assert c.get("/stats").json()["codec"].startswith("FAKE")
+    assert (Path(tmp_path) / "user").is_dir()
