@@ -106,6 +106,18 @@ def test_scrub_notices_a_deleted_file(tmp_path):
     assert r.missing == [cid(b"x")] and s.list_ids() == [] and s.used_bytes() == 0
 
 
+def test_has_drops_a_vanished_file_and_audit_proof(tmp_path):
+    import hmac
+
+    s = DiskChunkStore(tmp_path, quota_bytes=1024)
+    s.put(cid(b"keep"), b"keep")
+    nonce = b"n" * 16
+    assert s.audit_proof(cid(b"keep"), nonce) == hmac.new(nonce, b"keep", hashlib.sha256).hexdigest()
+    assert s.audit_proof(cid(b"other"), nonce) is None
+    (tmp_path / "chunks" / cid(b"keep")[:2] / cid(b"keep")).unlink()
+    assert s.has(cid(b"keep")) is False and s.list_ids() == [] and s.used_bytes() == 0
+
+
 def token_pair(seed: bytes = b"t"):
     token = hashlib.sha256(seed).hexdigest()
     return token, hashlib.sha256(bytes.fromhex(token)).hexdigest()
@@ -141,3 +153,13 @@ def test_unprotected_and_absent_chunks_cannot_be_deleted(tmp_path):
     assert s.has(cid(blob))
     assert s.delete(cid(b"never stored"), token) == "absent"
     assert s.delete(cid(blob), "not-hex") == "forbidden"
+
+
+def test_put_replaces_a_rotten_copy_with_good_bytes(tmp_path):
+    s = DiskChunkStore(tmp_path, quota_bytes=1024)
+    blob = b"good bytes"
+    s.put(cid(blob), blob)
+    assert s.put(cid(blob), blob) is False                        # intact: nothing to do
+    (tmp_path / "chunks" / cid(blob)[:2] / cid(blob)).write_bytes(b"rotten!!")
+    assert s.put(cid(blob), blob) is True                         # rotten: replaced, reported as new
+    assert s.get(cid(blob)) == blob and s.used_bytes() == len(blob)

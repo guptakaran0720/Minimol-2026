@@ -330,7 +330,7 @@ flowchart LR
 | Fake node joins | HMAC on every request and response | Done (closed membership) |
 | Unauthorized delete | Owner-derived delete tokens; peers store only the token's hash | Done |
 | Disk exhaustion / huge upload | Quotas (507), body caps (413), 256 MiB upload limit | Done |
-| Peer lies about storing a chunk | Inventory + HEAD at repair + slow-tier probes + local scrub | Partial; challenge audits planned |
+| Peer lies about storing a chunk | Proof-of-storage audits (HMAC over a random nonce), plus HEAD at repair, slow-tier probes and local scrub | MVP; a peer relaying challenges to an honest holder isn't stopped (needs per-node identities) |
 | Traffic sniffing | Payloads already encrypted; mutual TLS planned | Partial |
 
 ---

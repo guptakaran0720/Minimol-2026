@@ -10,7 +10,8 @@ export function Upload({ onUploaded }: { onUploaded: (r: UploadResult) => void }
   const [busy, setBusy] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [last, setLast] = useState<{ result: UploadResult; seconds: number } | null>(null);
+  const [last, setLast] = useState<{ result: UploadResult; seconds: number; locked: boolean } | null>(null);
+  const [lock, setLock] = useState(false);
 
   async function send(file: File) {
     if (busy) return;
@@ -22,8 +23,8 @@ export function Upload({ onUploaded }: { onUploaded: (r: UploadResult) => void }
     setError(null);
     const started = performance.now();
     try {
-      const result = await api.upload(file, file.name);
-      setLast({ result, seconds: (performance.now() - started) / 1000 });
+      const result = await api.upload(file, file.name, lock);
+      setLast({ result, seconds: (performance.now() - started) / 1000, locked: lock });
       onUploaded(result);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -88,6 +89,14 @@ export function Upload({ onUploaded }: { onUploaded: (r: UploadResult) => void }
         {busy && <span className="progress" aria-hidden="true" />}
       </label>
 
+      <label className="lock-toggle">
+        <input type="checkbox" checked={lock} disabled={!!busy} onChange={(e) => setLock(e.target.checked)} />
+        <span>
+          <strong>Lock to this laptop.</strong> Only this device (by its MAC address) can download or replace the
+          file, even with the same username and passphrase.
+        </span>
+      </label>
+
       {error && (
         <p className="tile-note tile-note-error" role="alert">
           {error}
@@ -100,6 +109,7 @@ export function Upload({ onUploaded }: { onUploaded: (r: UploadResult) => void }
             <strong>{r.name}</strong>
             <span className="muted">v{r.version}</span>
             <span className={`badge badge-${r.status === "durable" ? "healthy" : "degraded"}`}>{r.status}</span>
+            {last.locked && <span className="badge badge-locked">locked to this laptop</span>}
             <span className="muted">{last.seconds.toFixed(2)} s</span>
           </div>
           <dl className="result-grid">

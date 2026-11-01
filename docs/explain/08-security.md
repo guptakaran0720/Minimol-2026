@@ -26,7 +26,7 @@ Updated from [ARCHITECTURE_DECISIONS.md §12](../ARCHITECTURE_DECISIONS.md#12-se
 | Disk exhaustion or huge upload | Quota (507), streaming body caps (413) | Done |
 | Decompression bomb | Declared zstd size checked first, then `max_output_size = 1 MiB` | Done |
 | Index tampering or rollback | Ed25519 signature; peers keep the highest version; recovery takes the highest valid version across all peers | Done (rollback only reduced) |
-| Peer claims to store data it deleted | `HEAD` before and after each repair PUT; every download re-hashes; tier-2 peers get one GET-and-hash probe every 10 s | Partial: general spot checks and `POST /audit` are (planned) |
+| Peer claims to store data it deleted | Every 5 s each node challenges another holder of a chunk it also holds with a fresh random nonce (`POST /audit/{id}`); the holder must return HMAC-SHA256(nonce, chunk bytes), which needs the exact bytes. A failed audit distrusts that copy for 120 s, so repair restores a real copy elsewhere (or replaces the rotten one in place); `HEAD` around each repair PUT; every download re-hashes | MVP; relaying challenges isn't stopped |
 | Fake free-space claims | A refused PUT moves on to the next peer and marks the refuser suspect; only confirmed copies count | Done |
 | Replay within 30 s | Only idempotent requests are affected (re-PUT, re-read ciphertext) | Accepted |
 | Sybil attack | Closed membership via the cluster key | Done for a closed cluster, not open-network safe |
@@ -68,7 +68,7 @@ Updated from [ARCHITECTURE_DECISIONS.md §12](../ARCHITECTURE_DECISIONS.md#12-se
 
 - Not open-network safe: anyone with the cluster key is trusted as a member.
 - Plain HTTP between nodes; TLS is (planned).
-- No challenge audits of remote peers (planned). Each node does scrub its own disk and quarantine rotten chunks.
+- Audits can't stop a peer from relaying a challenge to an honest holder and passing on its answer; that needs per-node identities (planned).
 - No per-user quotas; the quota is per node.
 - We haven't had an external security review. These are our own tests.
 

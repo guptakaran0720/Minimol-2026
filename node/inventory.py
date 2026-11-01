@@ -19,14 +19,40 @@ from node.peers import PeerTable
 
 
 class LocationMap:
-    """Implements contracts.LocationMap."""
+    """Implements contracts.LocationMap.
 
-    def __init__(self) -> None:
+    A copy that failed a proof-of-storage audit is *distrusted* for AUDIT_DISTRUST_S:
+    holders() leaves it out even if that peer keeps listing the chunk in /inventory,
+    so repair counts one copy fewer and restores it elsewhere. Only a passed audit
+    (or the time running out, which leads to a fresh audit) clears it.
+    """
+
+    def __init__(self, clock=time.monotonic) -> None:
+        self.clock = clock
         self._by_chunk: dict[str, set[str]] = {}
         self._by_node: dict[str, set[str]] = {}
+        self._distrust: dict[tuple[str, str], float] = {}     # (chunk_id, node_id) -> until
 
     def holders(self, chunk_id: str) -> set[str]:
-        return set(self._by_chunk.get(chunk_id, ()))
+        return {n for n in self._by_chunk.get(chunk_id, ()) if not self.distrusted(chunk_id, n)}
+
+    def distrust(self, chunk_id: str, node_id: str, seconds: float) -> None:
+        self._distrust[(chunk_id, node_id)] = self.clock() + seconds
+
+    def trust(self, chunk_id: str, node_id: str) -> None:
+        self._distrust.pop((chunk_id, node_id), None)
+
+    def distrusted(self, chunk_id: str, node_id: str) -> bool:
+        until = self._distrust.get((chunk_id, node_id))
+        if until is None:
+            return False
+        if self.clock() >= until:
+            del self._distrust[(chunk_id, node_id)]
+            return False
+        return True
+
+    def distrusted_count(self) -> int:
+        return sum(1 for key in list(self._distrust) if self.distrusted(*key))
 
     def note(self, chunk_id: str, node_id: str) -> None:
         self._by_chunk.setdefault(chunk_id, set()).add(node_id)

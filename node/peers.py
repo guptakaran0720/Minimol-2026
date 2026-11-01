@@ -46,10 +46,13 @@ class PeerTable:
         self._candidates: set[str] = set()      # addrs not yet confirmed by a heartbeat
         self._slow_since: dict[str, float] = {}
         self._fast_since: dict[str, float] = {}
+        self._mac: dict[str, str | None] = {}      # node_id -> MAC, from its /health
+        self._draining: set[str] = set()            # peers that announced a graceful drain
 
     # ---- contracts.PeerTable ----
 
     def alive(self) -> list[Peer]:
+        """Peers that may receive new chunks. A draining peer is not alive here, but still serves reads."""
         return [p for p in self._peers.values() if p.state == "alive"]
 
     def get(self, node_id: str) -> Peer | None:
@@ -107,6 +110,11 @@ class PeerTable:
         p.addr = addr
         p.host_id = health["host_id"]
         p.free_bytes = int(health.get("free_bytes", 0))
+        self._mac[node_id] = health.get("mac") or None
+        if health.get("draining"):
+            self._draining.add(node_id)
+        else:
+            self._draining.discard(node_id)
         weight = float(health.get("weight", 1.0))
         p.weight = weight if weight > 0 else 1.0
         p.rtt_ewma = _ewma(p.rtt_ewma, rtt)
@@ -121,17 +129,34 @@ class PeerTable:
         silent_for = self.clock() - self._last_ok.get(node_id, self.clock())
         if silent_for >= config.DEAD_AFTER_S:
             self._set_state(p, "dead", f"no contact for {silent_for:.0f} s")
-        elif self._missed[node_id] >= config.SUSPECT_AFTER_MISSED and p.state == "alive":
+        elif self._missed[node_id] >= config.SUSPECT_AFTER_MISSED and p.state in ("alive", "draining"):
             self._set_state(p, "suspect", f"missed {self._missed[node_id]} heartbeats")
 
     def set_self_free(self, free_bytes: int) -> None:
         self.me.free_bytes = free_bytes
         self._last_ok[self.self_id] = self.clock()   # this node is always current
 
+    def set_mac(self, node_id: str, mac: str | None) -> None:
+        self._mac[node_id] = mac or None
+
+    def mac(self, node_id: str) -> str | None:
+        return self._mac.get(node_id)
+
+    def set_self_draining(self, draining: bool) -> None:
+        """This node is leaving: it takes no new chunks (here and, via /health, on every peer)."""
+        if draining:
+            self._draining.add(self.self_id)
+        else:
+            self._draining.discard(self.self_id)
+        self._set_state(self.me, "draining" if draining else "alive", "drain started" if draining else "drain cancelled")
+
     def _contact_ok(self, p: Peer) -> None:
         self._last_ok[p.node_id] = self.clock()
         self._missed[p.node_id] = 0
-        self._set_state(p, "alive", "answered again")
+        if p.node_id in self._draining:
+            self._set_state(p, "draining", "is leaving the cluster; its chunks are being copied elsewhere")
+        else:
+            self._set_state(p, "alive", "answered again")
 
     def _set_state(self, p: Peer, state: str, reason: str) -> None:
         if p.state == state:
@@ -172,6 +197,7 @@ class PeerTable:
                 "bw_mbps": round(p.bw_ewma * 8 / 1e6, 2), "free_bytes": p.free_bytes,
                 "last_ok_s_ago": round(now - self._last_ok.get(p.node_id, now), 1),
                 "self": p.node_id == self.self_id,
+                "ip": p.addr.rsplit(":", 1)[0], "mac": self._mac.get(p.node_id),
             }
             for p in self._peers.values()
         ]

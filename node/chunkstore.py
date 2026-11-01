@@ -18,6 +18,7 @@ offline during the delete verify the token and drop its own copy.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -97,7 +98,15 @@ class DiskChunkStore:
                 _atomic_write(self._delhash_dir / chunk_id, delete_hash.encode(), self._tmp)
                 self._delhash[chunk_id] = delete_hash
             if chunk_id in self._sizes:
-                return False
+                if self._intact(chunk_id):
+                    return False
+                # Our copy rotted (or was tampered with) and nobody noticed yet: take the good one.
+                path = self._path(chunk_id)
+                _atomic_write(path, blob, self._tmp)
+                self._used += len(blob) - self._sizes[chunk_id]
+                self._sizes[chunk_id] = len(blob)
+                self.scrub_stats["replaced"] = self.scrub_stats.get("replaced", 0) + 1
+                return True
             if self._used + len(blob) > self.quota_bytes:
                 raise QuotaExceeded(f"{self.free_bytes()} bytes free, need {len(blob)}")
             path = self._path(chunk_id)
@@ -106,6 +115,12 @@ class DiskChunkStore:
             self._sizes[chunk_id] = len(blob)
             self._used += len(blob)
             return True
+
+    def _intact(self, chunk_id: str) -> bool:
+        try:
+            return hashlib.sha256(self._path(chunk_id).read_bytes()).hexdigest() == chunk_id
+        except FileNotFoundError:
+            return False
 
     def get(self, chunk_id: str) -> bytes | None:
         if chunk_id not in self._sizes:
@@ -116,7 +131,24 @@ class DiskChunkStore:
             return None
 
     def has(self, chunk_id: str) -> bool:
-        return chunk_id in self._sizes
+        """True only if the file is really on disk; a vanished file is dropped at once."""
+        if chunk_id not in self._sizes:
+            return False
+        if self._path(chunk_id).exists():
+            return True
+        self._drop(chunk_id, quarantine=False)
+        return False
+
+    def audit_proof(self, chunk_id: str, nonce: bytes) -> str | None:
+        """HMAC-SHA256(nonce, stored bytes): proves possession of the exact bytes. None if not held."""
+        if chunk_id not in self._sizes:
+            return None
+        try:
+            data = self._path(chunk_id).read_bytes()
+        except FileNotFoundError:
+            self._drop(chunk_id, quarantine=False)
+            return None
+        return hmac.new(nonce, data, hashlib.sha256).hexdigest()
 
     def list_ids(self) -> list[str]:
         with self._lock:

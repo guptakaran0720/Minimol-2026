@@ -1,6 +1,6 @@
 // Typed calls to this node's user API (node/api_user.py). Same origin as the dashboard.
 
-export type PeerState = "alive" | "suspect" | "dead";
+export type PeerState = "alive" | "suspect" | "dead" | "draining";
 
 export interface Peer {
   node_id: string;
@@ -13,6 +13,8 @@ export interface Peer {
   free_bytes: number;
   last_ok_s_ago?: number;
   self?: boolean;
+  ip?: string;
+  mac?: string | null;
 }
 
 export interface RepairEvent {
@@ -67,6 +69,32 @@ export interface FileEntry {
   sha256: string;
   chunks: number;
   status: FileStatus;
+  lock_mac?: string;          // "" or absent = unlocked
+  locked_here?: boolean;      // false = locked to another device: no download here
+}
+
+/** One chunk this laptop's node sent to, or fetched from, a peer (GET /transfers). */
+export interface TransferEntry {
+  seq: number;
+  t: number;
+  direction: "upload" | "download";
+  chunk_id: string;
+  node_id: string;
+  addr: string;
+  ip: string;
+  mac: string | null;
+  bytes: number;
+  ms: number;
+}
+
+export interface DrainStatus {
+  draining: boolean;
+  since: number | null;
+  chunks: number;
+  safe_chunks: number;
+  other_live_hosts: number;
+  copies_needed_elsewhere: number;
+  safe_to_power_off: boolean;
 }
 
 export interface UploadResult {
@@ -122,14 +150,25 @@ export const api = {
   files: () => call<FileEntry[]>("/files"),
   map: (uuid: string) => call<ChunkMap>(`/files/${uuid}/map`),
   events: () => call<Timeline>("/events"),
+  transfers: (chunkIds: string[]) =>
+    call<{ node_id: string; mac: string | null; transfers: TransferEntry[] }>(
+      `/transfers?limit=2000&chunks=${encodeURIComponent(chunkIds.join(","))}`,
+    ),
+  drain: () => call<DrainStatus>("/drain"),
+  setDrain: (draining: boolean) =>
+    call<DrainStatus>("/drain", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ draining }),
+    }),
   recover: (username: string, passphrase: string) =>
     call<{ username: string; files_restored: number; files_unavailable: number; files: FileEntry[] }>("/recover", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, passphrase }),
     }),
-  upload: (file: File, name: string) =>
-    call<UploadResult>(`/files?name=${encodeURIComponent(name)}`, {
+  upload: (file: File, name: string, lock = false) =>
+    call<UploadResult>(`/files?name=${encodeURIComponent(name)}${lock ? "&lock=true" : ""}`, {
       method: "POST",
       headers: { "Content-Type": "application/octet-stream" },
       body: file,
