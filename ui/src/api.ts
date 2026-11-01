@@ -102,7 +102,7 @@ export const api = {
   files: () => call<FileEntry[]>("/files"),
   map: (uuid: string) => call<ChunkMap>(`/files/${uuid}/map`),
   recover: (username: string, passphrase: string) =>
-    call<{ username: string; files_restored: number; files: FileEntry[] }>("/recover", {
+    call<{ username: string; files_restored: number; files_unavailable: number; files: FileEntry[] }>("/recover", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, passphrase }),
