@@ -62,6 +62,10 @@ class IntegrityError(Exception):
     pass
 
 
+class FileLocked(Exception):
+    """The file is locked to another device's MAC address."""
+
+
 class Transfer:
     def __init__(
         self,
@@ -77,7 +81,9 @@ class Transfer:
         hedge: bool = True,
         hedge_factor: float = 2.0,
         hedge_min_s: float = 0.05,
+        device_mac: str = "",
     ):
+        self.device_mac = device_mac        # this laptop's MAC: what a locked file is bound to
         self.chunk_size = chunk_size
         self.hedge = hedge
         self.hedge_factor = hedge_factor
@@ -101,22 +107,34 @@ class Transfer:
 
     # ---------- upload ----------
 
-    async def upload(self, src: BinaryIO, name: str, placement: str = "tiered") -> UploadResult:
+    async def upload(self, src: BinaryIO, name: str, placement: str = "tiered",
+                     lock: bool | None = None) -> UploadResult:
         """Read src CHUNK_SIZE at a time; at most `parallel` chunks are in memory at once.
 
         Re-uploading a name reuses its file_uuid + DEK (version + 1), so unchanged
-        chunks encode to the same chunk_id and are not sent again (delta sync)."""
+        chunks encode to the same chunk_id and are not sent again (delta sync).
+
+        lock=True binds the file to this device's MAC (only this device may download or
+        replace it), lock=False clears it, None keeps the previous version's setting."""
         rank = PLACEMENTS[placement]
         # Pull files uploaded from other laptops first: the index we publish below is this
         # catalog, and re-uploading a name another laptop created should reuse its key.
         await self.recover()
         prev = self.latest_by_name(name)
+        lock_mac = ""
         if prev:
             old = await self._load_manifest(prev["manifest_id"])
+            if old.lock_mac and old.lock_mac != self.device_mac:
+                raise FileLocked(f"{name!r} is locked to device {old.lock_mac}; only that device can replace it")
             file_uuid, version = prev["file_uuid"], old.version + 1
             dek = self.codec.unwrap_key(self.keys.kek, old.wrapped_dek)
+            lock_mac = old.lock_mac
         else:
             file_uuid, version, dek = str(uuid.uuid4()), 1, os.urandom(32)
+        if lock is not None:
+            if lock and not self.device_mac:
+                raise FileLocked("this device has no MAC address to lock the file to")
+            lock_mac = self.device_mac if lock else ""
 
         sem = asyncio.Semaphore(self.parallel)
 
@@ -154,6 +172,7 @@ class Transfer:
             wrapped_dek=self.codec.wrap_key(self.keys.kek, dek),
             chunks=[{k: r[k] for k in ("index", "chunk_id", "plain_size", "compressed")} for r in rows],
             version=version,
+            lock_mac=lock_mac,
         )
         manifest_blob = self.codec.seal_manifest(manifest, self.keys.kek)
         manifest_id = self.codec.sha256_hex(manifest_blob)
@@ -168,6 +187,7 @@ class Transfer:
                 "size": size,
                 "sha256": manifest.sha256,
                 "chunk_ids": [r["chunk_id"] for r in rows],
+                "lock_mac": lock_mac,
             }
             self.last_index_acks = await self._publish_index()
             if self.last_index_acks == 0:
@@ -234,6 +254,9 @@ class Transfer:
 
         Raises IntegrityError after writing if the whole-file SHA-256 doesn't match,
         so callers must write to a temp file and only keep it on success."""
+        if not self.may_access(file_uuid):
+            lock = self.catalog[file_uuid]["lock_mac"]
+            raise FileLocked(f"this file is locked to device {lock}; this device is {self.device_mac or 'unknown'}")
         entry = self.catalog.get(file_uuid)
         if entry is None:
             raise FileNotFoundError(file_uuid)
@@ -396,6 +419,7 @@ class Transfer:
                     "size": m.size,
                     "sha256": m.sha256,
                     "chunk_ids": [c["chunk_id"] for c in sorted(m.chunks, key=lambda c: c["index"])],
+                    "lock_mac": m.lock_mac,
                 }
             self._save_catalog()
             have = {e["manifest_id"] for e in self.catalog.values()}
@@ -437,9 +461,16 @@ class Transfer:
 
     def list_files(self) -> list[dict]:
         return [
-            {k: v for k, v in e.items() if k != "chunk_ids"} | {"chunks": len(e["chunk_ids"]), "status": self.file_status(f)}
+            {k: v for k, v in e.items() if k != "chunk_ids"}
+            | {"chunks": len(e["chunk_ids"]), "status": self.file_status(f),
+               "lock_mac": e.get("lock_mac", ""), "locked_here": self.may_access(f)}
             for f, e in self.catalog.items()
         ]
+
+    def may_access(self, file_uuid: str) -> bool:
+        """False if the file is locked to a different device's MAC."""
+        lock = self.catalog.get(file_uuid, {}).get("lock_mac", "")
+        return not lock or lock == self.device_mac
 
     # ---------- local catalog cache (the index on peers is the durable copy) ----------
 

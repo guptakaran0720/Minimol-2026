@@ -12,6 +12,7 @@ is moved to quarantine/ and dropped from the store, so it disappears from
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -97,7 +98,24 @@ class DiskChunkStore:
             return None
 
     def has(self, chunk_id: str) -> bool:
-        return chunk_id in self._sizes
+        """True only if the file is really on disk; a vanished file is dropped at once."""
+        if chunk_id not in self._sizes:
+            return False
+        if self._path(chunk_id).exists():
+            return True
+        self._drop(chunk_id, quarantine=False)
+        return False
+
+    def audit_proof(self, chunk_id: str, nonce: bytes) -> str | None:
+        """HMAC-SHA256(nonce, stored bytes): proves possession of the exact bytes. None if not held."""
+        if chunk_id not in self._sizes:
+            return None
+        try:
+            data = self._path(chunk_id).read_bytes()
+        except FileNotFoundError:
+            self._drop(chunk_id, quarantine=False)
+            return None
+        return hmac.new(nonce, data, hashlib.sha256).hexdigest()
 
     def list_ids(self) -> list[str]:
         with self._lock:

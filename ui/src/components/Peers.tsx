@@ -1,7 +1,19 @@
-import { formatBytes, type Peer } from "../api";
+import { formatBytes, type DrainStatus, type Peer } from "../api";
 import { PeerMark, type Look } from "../identity";
 
-export function Peers({ peers, looks, wide = false }: { peers: Peer[]; looks: Map<string, Look>; wide?: boolean }) {
+export function Peers({
+  peers,
+  looks,
+  wide = false,
+  drain,
+  onDrain,
+}: {
+  peers: Peer[];
+  looks: Map<string, Look>;
+  wide?: boolean;
+  drain?: DrainStatus | null;
+  onDrain?: (draining: boolean) => void;
+}) {
   const alive = peers.filter((p) => p.state === "alive").length;
   const rows = [...peers].sort((a, b) => a.node_id.localeCompare(b.node_id));
   return (
@@ -49,8 +61,32 @@ export function Peers({ peers, looks, wide = false }: { peers: Peer[]; looks: Ma
                         </span>
                       )}
                       <span className="sub mono">
-                        {p.host_id} · {p.addr}
+                        {p.host_id} · IP {p.ip ?? p.addr} · MAC {p.mac ?? "—"}
                       </span>
+                      {p.self && onDrain && (
+                        <span className="drain-row">
+                          {drain?.draining ? (
+                            <>
+                              <span className={`small ${drain.safe_to_power_off ? "ok-text" : "muted"}`}>
+                                {drain.safe_to_power_off
+                                  ? "Safe to power off: every chunk is on the other laptops."
+                                  : `Draining: ${drain.safe_chunks} of ${drain.chunks} chunks safe elsewhere`}
+                              </span>
+                              <button className="text-btn" onClick={() => onDrain(false)}>
+                                Cancel drain
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              className="text-btn"
+                              onClick={() => onDrain(true)}
+                              title="Stop taking new chunks and copy this laptop's chunks to the others before you shut it down"
+                            >
+                              Drain this laptop
+                            </button>
+                          )}
+                        </span>
+                      )}
                     </span>
                   </span>
                 </td>

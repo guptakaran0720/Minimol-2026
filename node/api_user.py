@@ -34,7 +34,7 @@ from starlette.background import BackgroundTask
 from node.config import user_api_client_ok
 from node.contracts import CHUNK_SIZE, Codec, LocationMap, PeerClient, PeerTable, owner_salt
 from node.repair import Repairer
-from node.transfer import ChunkUnavailable, IntegrityError, NotEnoughPeers, Transfer
+from node.transfer import ChunkUnavailable, FileLocked, IntegrityError, NotEnoughPeers, Transfer
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +89,7 @@ class UserState:
     username: str | None = None
     sync_interval: float | None = None      # set by from_node; None = no background sync (tests)
     sync_task: asyncio.Task | None = None
+    device_mac: str = ""                    # this laptop's MAC, for locked files
 
     @classmethod
     def from_node(cls, node) -> UserState:
@@ -99,6 +100,7 @@ class UserState:
         return cls(codec=codec, peers=node.peers, client=node.client, locations=node.locations,
                    data_dir=Path(node.settings.data_dir) / "user", codec_label=label,
                    self_id=node.settings.node_id, sync_interval=SYNC_INTERVAL_S,
+                   device_mac=getattr(node.settings, "mac", "") or "",
                    allowed_networks=list(getattr(node.settings, "user_api_allow", []) or []))
 
 
@@ -152,6 +154,7 @@ def create_router(source) -> APIRouter:
             keys, s.codec, s.peers, s.client, s.locations,
             catalog_path=s.data_dir / f"catalog-{keys.sign_pub.hex()[:16]}.json",
             chunk_size=s.chunk_size,
+            device_mac=s.device_mac,
         )
         restored = await transfer.recover()
         s.transfer, s.username = transfer, username
@@ -167,6 +170,7 @@ def create_router(source) -> APIRouter:
         request: Request,
         name: str = Query(..., min_length=1, max_length=255),
         placement: Literal["tiered", "random"] = "tiered",     # "random" = bench.py baseline only
+        lock: bool | None = None,       # true: only this device may download it; false: unlock; omitted: keep
         transfer: Transfer = Depends(unlocked),
     ) -> dict:
         declared = request.headers.get("content-length")
@@ -183,9 +187,11 @@ def create_router(source) -> APIRouter:
                 spool.write(part)
             spool.seek(0)
             try:
-                result = await transfer.upload(spool, name, placement)
+                result = await transfer.upload(spool, name, placement, lock=lock)
             except NotEnoughPeers as e:
                 raise HTTPException(503, f"not enough peers accepted the data: {e}") from e
+            except FileLocked as e:
+                raise HTTPException(403, str(e)) from e
         out = asdict(result)
         out["compression_ratio"] = (round(result.encoded_bytes / result.original_bytes, 4)
                                     if result.original_bytes else None)
@@ -207,6 +213,9 @@ def create_router(source) -> APIRouter:
         entry = transfer.catalog.get(file_uuid)
         if entry is None:
             raise HTTPException(404, "unknown file")
+        if not transfer.may_access(file_uuid):
+            raise HTTPException(403, f"locked to device {entry['lock_mac']}; this device is "
+                                     f"{transfer.device_mac or 'unknown'}")
         # Write to a temp file and only serve it after the whole-file hash checks out.
         fd, path = tempfile.mkstemp(prefix="dl-")
         try:

@@ -50,6 +50,8 @@ class Manifest:
     chunks: list[dict]   # {index, chunk_id, plain_size, compressed}
     version: int = 1     # bumps on every re-upload of the same file (delta sync);
                          # the owner index keeps only the latest manifest per file_uuid
+    lock_mac: str = ""   # "" = unlocked; else only the device with this MAC may download
+                         # or replace the file (a policy every node enforces, not encryption)
 
 
 class Codec(Protocol):
@@ -99,7 +101,7 @@ class Peer:
     node_id: str
     host_id: str                 # failure domain: never two replicas on one host_id
     addr: str                    # "ip:port"
-    state: str = "alive"         # alive | suspect | dead
+    state: str = "alive"         # alive | suspect | dead | draining (leaving: serves reads, takes no new chunks)
     rtt_ewma: float = 0.0        # seconds; 0 = no samples yet
     bw_ewma: float = 0.0         # bytes/second from real chunk transfers; 0 = no samples yet
     free_bytes: int = 0

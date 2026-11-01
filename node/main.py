@@ -4,7 +4,9 @@
     CLUSTER_KEY=... python -m node.main          # same, using BIND_HOST / PORT
 
 Starts the peer API plus the background loops (heartbeat, inventory, gossip,
-scrub), and GET /events: the dashboard timeline (localhost only).
+scrub, audit, drain check). Localhost-only routes for the dashboard and tools:
+GET /events (timeline), GET /transfers (per-chunk upload/download log with peer
+IP and MAC), GET+POST /drain (graceful leave), GET /metrics (Prometheus text).
 Other owners' parts are wired in when their modules exist:
 - P1 node/index.py: verify_index(record, owner_pub) -> version
 - P3 node/api_user.py: create_router(node: Node) -> APIRouter, served on this
@@ -17,21 +19,26 @@ import asyncio
 import importlib
 import logging
 import os
+import random
+from collections import Counter
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi import Body, Depends, FastAPI, HTTPException, Request
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from node import config
+from node import metrics
 from node.api_peer import create_peer_app
+from node.audit import audit_once
 from node.chunkstore import DiskChunkStore, IndexStore
 from node.config import Settings, user_api_client_ok
 from node.contracts import Peer
 from node.discovery import MdnsDiscovery, add_seeds, gossip_once
-from node.events import EventLog
+from node.drain import Drain
+from node.events import EventLog, TransferLog
 from node.inventory import LocationMap, inventory_once
 from node.peer_client import HttpPeerClient
 from node.peers import PeerTable, heartbeat_once
@@ -50,6 +57,9 @@ class Node:
     client: HttpPeerClient
     locations: LocationMap
     events: EventLog = field(default_factory=EventLog)
+    transfers: TransferLog = field(default_factory=TransferLog)
+    drain: Drain = field(default_factory=Drain)
+    audit_stats: Counter = field(default_factory=Counter)
 
 
 def build_node(settings: Settings) -> Node:
@@ -59,8 +69,9 @@ def build_node(settings: Settings) -> Node:
     me.free_bytes = store.free_bytes()
     events = EventLog()
     peers = PeerTable(me, events=events)
+    peers.set_mac(settings.node_id, settings.mac)
     add_seeds(peers, settings.seeds)
-    return Node(
+    node = Node(
         settings=settings,
         store=store,
         index_store=IndexStore(settings.data_dir),
@@ -69,6 +80,10 @@ def build_node(settings: Settings) -> Node:
         locations=LocationMap(),
         events=events,
     )
+    node.client.on_transfer = lambda direction, peer, chunk_id, nbytes, seconds: node.transfers.add(
+        direction, chunk_id, peer.node_id, peer.addr, peers.mac(peer.node_id), nbytes, seconds)
+    node.client.is_distrusted = node.locations.distrusted
+    return node
 
 
 def timeline(node: Node, repairer=None, limit: int = 200) -> dict:
@@ -130,6 +145,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if settings.scrub_per_s > 0:
             loops.append(_every(config.SCRUB_INTERVAL_S, "scrub", lambda: scrub_once(
                 n.store, n.locations, settings.node_id, n.events, settings.scrub_per_s)))
+        if settings.audit_per_round > 0:
+            rng = random.Random()
+            loops.append(_every(config.AUDIT_INTERVAL_S, "audit", lambda: audit_once(
+                n.store, n.locations, n.peers, n.client, n.events, settings.audit_per_round, n.audit_stats, rng)))
+        loops.append(_every(config.DRAIN_CHECK_INTERVAL_S, "drain",
+                            lambda: n.drain.check_once(n.store, n.locations, n.peers, n.events)))
         repairer_cls = _optional("node.repair", "Repairer")
         if repairer_cls is not None:
             repairer = repairer_cls(settings.node_id, settings.host_id, n.store, n.peers, n.client, n.locations)
@@ -154,9 +175,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = create_peer_app(settings, node.store, node.index_store, node.peers, verify_index, lifespan)
     app.state.node = node
 
-    @app.get("/events", dependencies=[Depends(localhost_only(settings))])
+    local = [Depends(localhost_only(settings))]
+
+    @app.get("/events", dependencies=local)
     async def events():
         return timeline(node, getattr(app.state, "repairer", None))
+
+    @app.get("/transfers", dependencies=local)
+    async def transfers(chunks: str = "", limit: int = 500):
+        """Chunks this node uploaded to / downloaded from peers, newest first, with each peer's IP and MAC.
+        `chunks`: comma-separated chunk ids to filter on (the dashboard passes one file's chunks)."""
+        wanted = {c for c in chunks.split(",") if c} or None
+        return {"node_id": settings.node_id, "mac": settings.mac or None,
+                "transfers": node.transfers.recent(wanted, max(1, min(limit, 5000)))}
+
+    @app.get("/drain", dependencies=local)
+    async def drain_status():
+        return node.drain.status(node.store, node.locations, node.peers)
+
+    @app.post("/drain", dependencies=local)
+    async def drain_set(draining: bool = Body(..., embed=True)):
+        (node.drain.start if draining else node.drain.stop)(node.peers, node.events)
+        return node.drain.status(node.store, node.locations, node.peers)
+
+    @app.get("/metrics", dependencies=local, response_class=PlainTextResponse)
+    async def prometheus_metrics():
+        return PlainTextResponse(metrics.render(node, app.state.served, getattr(app.state, "repairer", None)),
+                                 media_type="text/plain; version=0.0.4")
 
     create_router = _optional("node.api_user", "create_router")
     if create_router is not None:

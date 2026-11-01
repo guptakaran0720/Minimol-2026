@@ -104,3 +104,15 @@ def test_scrub_notices_a_deleted_file(tmp_path):
     (tmp_path / "chunks" / cid(b"x")[:2] / cid(b"x")).unlink()
     r = s.scrub_some(5)
     assert r.missing == [cid(b"x")] and s.list_ids() == [] and s.used_bytes() == 0
+
+
+def test_has_drops_a_vanished_file_and_audit_proof(tmp_path):
+    import hmac
+
+    s = DiskChunkStore(tmp_path, quota_bytes=1024)
+    s.put(cid(b"keep"), b"keep")
+    nonce = b"n" * 16
+    assert s.audit_proof(cid(b"keep"), nonce) == hmac.new(nonce, b"keep", hashlib.sha256).hexdigest()
+    assert s.audit_proof(cid(b"other"), nonce) is None
+    (tmp_path / "chunks" / cid(b"keep")[:2] / cid(b"keep")).unlink()
+    assert s.has(cid(b"keep")) is False and s.list_ids() == [] and s.used_bytes() == 0

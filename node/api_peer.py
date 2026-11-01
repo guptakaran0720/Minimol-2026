@@ -11,6 +11,7 @@ import asyncio
 import json
 import re
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -38,8 +39,9 @@ class Caller:
 class SignResponses:
     """ASGI middleware: sign the response to every request that passed auth.verify."""
 
-    def __init__(self, app, key: bytes, node_id: str):
+    def __init__(self, app, key: bytes, node_id: str, served: Counter | None = None):
         self.app, self.key, self.node_id = app, key, node_id
+        self.served = served if served is not None else Counter()   # (route, status) -> count, for /metrics
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -56,6 +58,9 @@ class SignResponses:
                     return
                 body = b"".join(parts)
                 headers = list(start.get("headers", []))
+                route = "/" + scope.get("path", "/").split("/")[1]
+                self.served[(route, str(start["status"]))] += 1
+                self.served[("bytes_out", "")] += len(body)
                 request_sig = scope.get("state", {}).get("verified_sig")
                 if request_sig:
                     sig = auth.sign_response(self.key, start["status"], request_sig, self.node_id, body)
@@ -94,7 +99,8 @@ def create_peer_app(
     lifespan=None,
 ) -> FastAPI:
     app = FastAPI(title=f"peer {settings.node_id}", lifespan=lifespan)
-    app.add_middleware(SignResponses, key=settings.cluster_key, node_id=settings.node_id)
+    app.state.served = Counter()
+    app.add_middleware(SignResponses, key=settings.cluster_key, node_id=settings.node_id, served=app.state.served)
     started = time.monotonic()
 
     def authed(limit: int):
@@ -119,6 +125,7 @@ def create_peer_app(
     no_body = Depends(authed(0))
     chunk_body = Depends(authed(config.CHUNK_BODY_MAX))
     index_body = Depends(authed(config.INDEX_BODY_MAX))
+    audit_body = Depends(authed(512))
 
     def check_id(value: str, what: str) -> None:
         if not is_hex64(value):
@@ -130,6 +137,8 @@ def create_peer_app(
             "node_id": settings.node_id,
             "host_id": settings.host_id,
             "addr": settings.advertise_addr,
+            "mac": settings.mac or None,
+            "draining": peers.me.state == "draining",
             "weight": settings.weight,
             "free_bytes": store.free_bytes(),
             "used_bytes": store.used_bytes(),
@@ -165,6 +174,21 @@ def create_peer_app(
     async def head_chunk(chunk_id: str, _: Caller = no_body):
         check_id(chunk_id, "chunk_id")
         return Response(status_code=200 if store.has(chunk_id) else 404)
+
+    @app.post("/audit/{chunk_id}")
+    async def audit(chunk_id: str, caller: Caller = audit_body):
+        """Proof of storage: HMAC-SHA256(nonce, stored bytes). Only a node holding the exact bytes can answer."""
+        check_id(chunk_id, "chunk_id")
+        try:
+            nonce = bytes.fromhex(json.loads(caller.body)["nonce"])
+        except (ValueError, KeyError, TypeError):
+            raise HTTPException(400, "body must be {\"nonce\": <hex>}") from None
+        if not 16 <= len(nonce) <= 64:
+            raise HTTPException(400, "nonce must be 16-64 bytes")
+        proof = await run_in_threadpool(store.audit_proof, chunk_id, nonce)
+        if proof is None:
+            raise HTTPException(404, "not stored here")
+        return {"proof": proof}
 
     @app.get("/inventory")
     async def inventory(_: Caller = no_body):

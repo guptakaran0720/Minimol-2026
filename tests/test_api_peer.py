@@ -200,3 +200,49 @@ def test_replayed_response_rejected(tmp_path):
     c = HttpPeerClient("node-b", KEY, httpx.AsyncClient(transport=Replay()))
     with pytest.raises(AuthError):
         run(c.head_chunk(peer, cid(blob)))
+
+
+def test_audit_route_proves_possession(tmp_path):
+    import hmac as _hmac
+
+    store, _, client, peer = make(tmp_path)
+    blob = b"audited bytes"
+    run(client.put_chunk(peer, cid(blob), blob))
+    nonce = bytes(range(16))
+    assert run(client.audit_chunk(peer, cid(blob), nonce)) == _hmac.new(nonce, blob, hashlib.sha256).hexdigest()
+    assert run(client.audit_chunk(peer, cid(b"never stored"), nonce)) is None
+    bad = json.dumps({"nonce": "zz"}).encode()
+    assert run(raw(client, "POST", f"/audit/{cid(blob)}", bad)).status_code == 400
+    short = json.dumps({"nonce": "00" * 4}).encode()
+    assert run(raw(client, "POST", f"/audit/{cid(blob)}", short)).status_code == 400
+
+
+def test_health_reports_mac_and_draining(tmp_path):
+    _, table, client, peer = make(tmp_path)
+    h = run(client.health(peer.addr))
+    assert h["draining"] is False and "mac" in h
+    table.set_self_draining(True)
+    assert run(client.health(peer.addr))["draining"] is True
+
+
+def test_client_counts_traffic_and_logs_chunk_transfers(tmp_path):
+    _, _, client, peer = make(tmp_path)
+    moved = []
+    client.on_transfer = lambda d, p, c, n, s: moved.append((d, p.node_id, c[:8], n))
+    blob = b"z" * 2000
+    run(client.put_chunk(peer, cid(blob), blob))
+    run(client.get_chunk(peer, cid(blob)))
+    run(client.head_chunk(peer, cid(blob)))
+    assert moved == [("upload", "node-a", cid(blob)[:8], 2000), ("download", "node-a", cid(blob)[:8], 2000)]
+    assert client.bytes_sent["node-a"] >= 2000 and client.bytes_received["node-a"] >= 2000
+    assert client.requests[("node-a", "PUT /chunks", "201")] == 1
+    assert client.requests[("node-a", "HEAD /chunks", "200")] == 1
+
+
+def test_distrusted_copy_is_not_believed(tmp_path):
+    _, _, client, peer = make(tmp_path)
+    blob = b"held"
+    run(client.put_chunk(peer, cid(blob), blob))
+    assert run(client.head_chunk(peer, cid(blob))) is True
+    client.is_distrusted = lambda chunk_id, node_id: node_id == "node-a"
+    assert run(client.head_chunk(peer, cid(blob))) is False     # repair places a real copy elsewhere

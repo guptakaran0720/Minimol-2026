@@ -4,6 +4,7 @@ import { usePoll } from "./usePoll";
 import { useClusterFeed } from "./feed";
 import { peerLooks } from "./identity";
 import { ChunkMapView } from "./components/ChunkMapView";
+import { FileLogs } from "./components/FileLogs";
 import { Files } from "./components/Files";
 import { Peers } from "./components/Peers";
 import { Repair } from "./components/Repair";
@@ -18,6 +19,8 @@ const POLL_MS = 2000;
 export default function App() {
   const stats = usePoll(api.stats, POLL_MS);
   const timeline = usePoll(api.events, POLL_MS);
+  const drain = usePoll(api.drain, POLL_MS);
+  const [logsFor, setLogsFor] = useState<string | null>(null);
   const unlocked = stats.data?.unlocked ?? false;
   const files = usePoll(api.files, POLL_MS, unlocked ? "files" : null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -45,6 +48,7 @@ export default function App() {
     for (const p of peers) {
       if (p.state === "dead") status.push({ text: `${p.node_id} is down`, tone: "red" });
       else if (p.state === "suspect") status.push({ text: `${p.node_id} is not answering`, tone: "yellow" });
+      else if (p.state === "draining") status.push({ text: `${p.node_id} is draining · its chunks are moving to the others`, tone: "blue" });
       else if (p.tier === 2) status.push({ text: `${p.node_id} in the slow tier · ${p.rtt_ms.toFixed(0)} ms`, tone: "yellow" });
     }
     if (unlocked) {
@@ -133,14 +137,34 @@ export default function App() {
           <HealthTile stats={s} unlocked={unlocked} />
           <LinkTile peers={peers} looks={looks} />
           <RepairTile repair={s.repair} />
-          <Files files={files.data ?? []} unlocked={unlocked} selected={selected} onSelect={setSelected} />
+          <Files files={files.data ?? []} unlocked={unlocked} selected={selected} onSelect={setSelected} onLogs={setLogsFor} />
           <RecoveryTile username={unlocked ? s.username : null} codec={s.codec} />
           {unlocked && (
             <ChunkMapView map={map.data} file={(files.data ?? []).find((f) => f.file_uuid === selected)} peers={peers} looks={looks} />
           )}
           <Timeline data={timeline.data} wide={!unlocked} />
           <Repair repair={s.repair} scrub={timeline.data?.scrub ?? null} />
-          <Peers peers={peers} looks={looks} wide={!unlocked} />
+          <Peers
+            peers={peers}
+            looks={looks}
+            wide={!unlocked}
+            drain={drain.data}
+            onDrain={async (on) => {
+              try {
+                await api.setDrain(on);
+              } finally {
+                drain.refresh();
+                stats.refresh();
+              }
+            }}
+          />
+          {logsFor && (files.data ?? []).some((f) => f.file_uuid === logsFor) && (
+            <FileLogs
+              file={(files.data ?? []).find((f) => f.file_uuid === logsFor)!}
+              peers={peers}
+              onClose={() => setLogsFor(null)}
+            />
+          )}
         </main>
       ) : (
         !stats.error && <p className="loading">Connecting to this node…</p>

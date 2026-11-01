@@ -31,6 +31,9 @@ class ManifestError(CryptoError):
     pass
 
 
+_MAC = re.compile(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}")
+
+
 def manifest_id(blob: bytes) -> str:
     return hashlib.sha256(blob).hexdigest()
 
@@ -54,6 +57,8 @@ def _to_json(m: Manifest) -> bytes:
             for c in m.chunks
         ],
     }
+    if m.lock_mac:                 # only locked files carry it, so unlocked manifests are unchanged
+        doc["lock_mac"] = m.lock_mac
     return json.dumps(doc, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
@@ -75,6 +80,8 @@ def _check(m: Manifest) -> None:
         total += c["plain_size"]
     if total != m.size:
         raise ManifestError(f"chunk sizes add up to {total}, manifest says {m.size}")
+    if m.lock_mac and not _MAC.fullmatch(m.lock_mac):
+        raise ManifestError("lock_mac must look like aa:bb:cc:dd:ee:ff")
 
 
 def seal_manifest(m: Manifest, kek: bytes) -> bytes:
@@ -104,6 +111,7 @@ def open_manifest(blob: bytes, kek: bytes) -> Manifest:
         wrapped_dek=base64.b64decode(doc["wrapped_dek"]),
         chunks=doc["chunks"],
         version=doc["version"],
+        lock_mac=doc.get("lock_mac", ""),
     )
     _check(m)
     return m

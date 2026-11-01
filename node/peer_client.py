@@ -5,10 +5,17 @@ signature from the node we meant to reach (auth.verify_response). Connect
 timeout 1 s, read timeout 5 s. Network errors, bad signatures and unexpected
 status codes raise; callers treat any exception as a failed transfer.
 Expected "no" answers (404, rejected PUT) return None/False.
+
+It also keeps per-peer traffic counters (for /metrics), reports every chunk it
+moves to `on_transfer` (for the per-file Logs), and refuses to believe a peer's
+"I have it" for a copy that failed a proof-of-storage audit (`is_distrusted`).
 """
 from __future__ import annotations
 
 import json
+import time
+from collections import Counter
+from collections.abc import Callable
 
 import httpx
 
@@ -26,17 +33,33 @@ class HttpPeerClient:
             timeout=httpx.Timeout(config.READ_TIMEOUT_S, connect=config.CONNECT_TIMEOUT_S),
             limits=httpx.Limits(max_connections=64, max_keepalive_connections=16),
         )
+        # (peer, op, outcome) -> count; peer -> bytes. "peer" is the node_id, or the addr before we know it.
+        self.requests: Counter[tuple[str, str, str]] = Counter()
+        self.bytes_sent: Counter[str] = Counter()
+        self.bytes_received: Counter[str] = Counter()
+        # on_transfer(direction, peer, chunk_id, nbytes, seconds); set by main.py
+        self.on_transfer: Callable[[str, Peer, str, int, float], None] | None = None
+        # is_distrusted(chunk_id, node_id): True while that copy is under a failed audit
+        self.is_distrusted: Callable[[str, str], bool] = lambda chunk_id, node_id: False
 
     async def _request(self, target: Peer | str, method: str, path: str, body: bytes = b"",
                        content_type: str | None = None) -> httpx.Response:
         """target is a Peer (its node_id must sign the answer) or a bare addr (any member may)."""
         addr, expect = (target.addr, target.node_id) if isinstance(target, Peer) else (target, None)
+        who, op = expect or addr, f"{method} /{path.split('/')[1]}"
         headers = auth.sign_headers(self.key, self.node_id, method, path, body)
         if self.advertise_addr:
             headers["X-Addr"] = self.advertise_addr
         if content_type:
             headers["Content-Type"] = content_type
-        r = await self.http.request(method, f"http://{addr}{path}", content=body, headers=headers)
+        try:
+            r = await self.http.request(method, f"http://{addr}{path}", content=body, headers=headers)
+        except Exception:
+            self.requests[(who, op, "error")] += 1
+            raise
+        self.bytes_sent[who] += len(body)
+        self.bytes_received[who] += len(r.content)
+        self.requests[(who, op, str(r.status_code))] += 1
         if r.status_code == 401:               # it rejected our signature; 401s are never signed
             raise self._unexpected(r)
         responder = auth.verify_response(self.key, r.status_code, headers["X-Sig"], r.headers, r.content)
@@ -51,17 +74,25 @@ class HttpPeerClient:
 
     # ---- contracts.PeerClient ----
 
+    def _moved(self, direction: str, peer: Peer, chunk_id: str, nbytes: int, started: float) -> None:
+        if self.on_transfer is not None:
+            self.on_transfer(direction, peer, chunk_id, nbytes, time.monotonic() - started)
+
     async def put_chunk(self, peer: Peer, chunk_id: str, blob: bytes) -> bool:
+        started = time.monotonic()
         r = await self._request(peer, "PUT", f"/chunks/{chunk_id}", blob, "application/octet-stream")
         if r.status_code in (200, 201):
+            self._moved("upload", peer, chunk_id, len(blob), started)
             return True
         if r.status_code in (400, 413, 507):   # hash mismatch, too big, quota full
             return False
         raise self._unexpected(r)
 
     async def get_chunk(self, peer: Peer, chunk_id: str) -> bytes | None:
+        started = time.monotonic()
         r = await self._request(peer, "GET", f"/chunks/{chunk_id}")
         if r.status_code == 200:
+            self._moved("download", peer, chunk_id, len(r.content), started)
             return r.content
         if r.status_code == 404:
             return None
@@ -70,7 +101,19 @@ class HttpPeerClient:
     async def head_chunk(self, peer: Peer, chunk_id: str) -> bool:
         r = await self._request(peer, "HEAD", f"/chunks/{chunk_id}")
         if r.status_code in (200, 404):
-            return r.status_code == 200
+            # A copy that just failed our audit doesn't count, whatever the peer says,
+            # so repair places a real copy somewhere else.
+            return r.status_code == 200 and not self.is_distrusted(chunk_id, peer.node_id)
+        raise self._unexpected(r)
+
+    async def audit_chunk(self, peer: Peer, chunk_id: str, nonce: bytes) -> str | None:
+        """Ask peer for HMAC-SHA256(nonce, its copy). None if it says it doesn't hold the chunk."""
+        body = json.dumps({"nonce": nonce.hex()}).encode()
+        r = await self._request(peer, "POST", f"/audit/{chunk_id}", body, "application/json")
+        if r.status_code == 200:
+            return r.json()["proof"]
+        if r.status_code == 404:
+            return None
         raise self._unexpected(r)
 
     async def get_inventory(self, peer: Peer) -> list[str]:
