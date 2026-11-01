@@ -5,11 +5,15 @@ export function Files({
   unlocked,
   selected,
   onSelect,
+  onPreview,
+  onDelete,
 }: {
   files: FileEntry[];
   unlocked: boolean;
   selected: string | null;
   onSelect: (uuid: string) => void;
+  onPreview: (file: FileEntry) => void;
+  onDelete: (file: FileEntry) => void;
 }) {
   const chunks = files.reduce((n, f) => n + f.chunks, 0);
   return (
@@ -39,6 +43,18 @@ export function Files({
                 </span>
               </button>
               <span className={`badge badge-${f.status}`}>{f.status}</span>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => onPreview(f)}
+                title="Preview"
+                aria-label={`Preview ${f.name}`}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </button>
               <a
                 className="icon-btn"
                 href={api.downloadUrl(f.file_uuid)}
@@ -49,6 +65,17 @@ export function Files({
                   <path d="M12 5v14M6 13l6 6 6-6" />
                 </svg>
               </a>
+              <button
+                type="button"
+                className="icon-btn icon-btn-danger"
+                onClick={() => onDelete(f)}
+                title="Delete from every laptop"
+                aria-label={`Delete ${f.name}`}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6" />
+                </svg>
+              </button>
             </li>
           ))}
         </ul>
