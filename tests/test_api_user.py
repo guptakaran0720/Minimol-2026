@@ -162,11 +162,25 @@ def client_for_node(node):
 def test_create_router_from_node_without_p1_is_locked_with_503(cluster, tmp_path, monkeypatch):
     monkeypatch.delenv("DEV_FAKE_CODEC", raising=False)
     monkeypatch.setattr(api_user, "LOCAL_HOSTS", {"testclient"})
+    # P1's modules now exist, so simulate a node where they are missing.
+    monkeypatch.setattr(api_user, "CODEC_MODULES", {"node.p1_not_installed": ("encode_chunk",)})
     c = TestClient(client_for_node(node_like(cluster, tmp_path)))
     r = c.post("/recover", json=LOGIN)
     assert r.status_code == 503 and "P1" in r.json()["detail"]
     stats = c.get("/stats").json()
     assert stats["node_id"] == "node0" and "not available" in stats["codec"]
+
+
+def test_create_router_from_node_with_real_p1_codec(cluster, tmp_path, monkeypatch):
+    monkeypatch.delenv("DEV_FAKE_CODEC", raising=False)
+    monkeypatch.setenv("MINIMOL_SCRYPT_N", "4096")
+    monkeypatch.setattr(api_user, "LOCAL_HOSTS", {"testclient"})
+    c = TestClient(client_for_node(node_like(cluster, tmp_path)))
+    assert c.post("/recover", json=LOGIN).status_code == 200
+    assert c.get("/stats").json()["codec"] == "P1 pipeline"
+    data = b"2026-11-01T11:30:00,s7,23.4\n" * 40_000 + os.urandom(3000)
+    file_uuid = c.post("/files?name=log.csv", content=data).json()["file_uuid"]
+    assert c.get(f"/files/{file_uuid}").content == data
 
 
 def test_create_router_from_node_with_dev_fake_codec(cluster, tmp_path, monkeypatch):
