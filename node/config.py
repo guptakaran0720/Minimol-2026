@@ -5,6 +5,7 @@ Everything else has a default; see Settings.from_env.
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 import socket
 import uuid
@@ -58,6 +59,9 @@ class Settings:
     weight: float = 1.0
     simulated_delay_ms: int = 0
     mdns: bool = True
+    # Extra client networks allowed to use the user API besides localhost. Only for
+    # Docker, where published ports arrive from the bridge gateway. Never a LAN range.
+    user_api_allow: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = field(default_factory=list)
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -83,6 +87,8 @@ class Settings:
             weight=weight,
             simulated_delay_ms=int(env.get("SIMULATED_DELAY_MS", "0")),
             mdns=env.get("MDNS", "1") not in ("0", "false", "no", ""),
+            user_api_allow=[ipaddress.ip_network(n.strip(), strict=False)
+                            for n in env.get("USER_API_ALLOW", "").split(",") if n.strip()],
         )
 
 
@@ -95,3 +101,19 @@ def _persistent_node_id(data_dir: Path) -> str:
     node_id = f"n-{uuid.uuid4().hex[:12]}"
     path.write_text(node_id)
     return node_id
+
+
+LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def user_api_client_ok(host: str | None, allow: list) -> bool:
+    """Localhost always; otherwise only addresses inside USER_API_ALLOW."""
+    if not host:
+        return False
+    if host in LOCAL_HOSTS:
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(addr in net for net in allow)

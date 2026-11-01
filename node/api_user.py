@@ -30,6 +30,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
+from node.config import user_api_client_ok
 from node.contracts import CHUNK_SIZE, Codec, LocationMap, PeerClient, PeerTable, owner_salt
 from node.repair import Repairer
 from node.transfer import ChunkUnavailable, IntegrityError, NotEnoughPeers, Transfer
@@ -79,6 +80,7 @@ class UserState:
     repairer: Repairer | None = None
     chunk_size: int = CHUNK_SIZE
     allowed_hosts: set[str] = field(default_factory=lambda: set(LOCAL_HOSTS))
+    allowed_networks: list = field(default_factory=list)    # Settings.user_api_allow (Docker only)
     codec_label: str = "injected"
     self_id: str | None = None
     transfer: Transfer | None = None
@@ -92,7 +94,8 @@ class UserState:
             log.warning("user API is up but locked: %s", label)
         return cls(codec=codec, peers=node.peers, client=node.client, locations=node.locations,
                    data_dir=Path(node.settings.data_dir) / "user", codec_label=label,
-                   self_id=node.settings.node_id)
+                   self_id=node.settings.node_id,
+                   allowed_networks=list(getattr(node.settings, "user_api_allow", []) or []))
 
 
 class RecoverBody(BaseModel):
@@ -107,7 +110,7 @@ def create_router(source) -> APIRouter:
 
     def local(request: Request) -> UserState:
         host = request.client.host if request.client else ""
-        if host not in st.allowed_hosts:
+        if host not in st.allowed_hosts and not user_api_client_ok(host, st.allowed_networks):
             raise HTTPException(403, "user API is only available on this machine")
         return st
 
