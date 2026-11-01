@@ -32,9 +32,17 @@ from node.contracts import (
     PeerTable,
     UploadResult,
 )
-from node.routing import rank_for_placement, rank_for_retrieval
+from node.routing import (
+    rank_for_placement,
+    rank_for_placement_baseline,
+    rank_for_retrieval,
+    rank_for_retrieval_baseline,
+)
 
 MANIFEST_SIZE_HINT = 64 * 1024
+# The baselines exist only so bench.py can A/B the real strategies against them.
+PLACEMENTS = {"tiered": rank_for_placement, "random": rank_for_placement_baseline}
+RETRIEVALS = {"eta": rank_for_retrieval, "random": rank_for_retrieval_baseline}
 
 
 class NotEnoughPeers(Exception):
@@ -79,11 +87,12 @@ class Transfer:
 
     # ---------- upload ----------
 
-    async def upload(self, src: BinaryIO, name: str) -> UploadResult:
+    async def upload(self, src: BinaryIO, name: str, placement: str = "tiered") -> UploadResult:
         """Read src CHUNK_SIZE at a time; at most `parallel` chunks are in memory at once.
 
         Re-uploading a name reuses its file_uuid + DEK (version + 1), so unchanged
         chunks encode to the same chunk_id and are not sent again (delta sync)."""
+        rank = PLACEMENTS[placement]
         prev = self.latest_by_name(name)
         if prev:
             old = await self._load_manifest(prev["manifest_id"])
@@ -96,7 +105,7 @@ class Transfer:
 
         async def encode_and_store(plain: bytes, index: int) -> tuple[dict, list[str], int]:
             c = await asyncio.to_thread(self.codec.encode_chunk, plain, index, file_uuid, dek)
-            holders, sent = await self._store_object(c.chunk_id, c.blob, sem)
+            holders, sent = await self._store_object(c.chunk_id, c.blob, sem, rank)
             row = {"index": c.index, "chunk_id": c.chunk_id, "plain_size": c.plain_size,
                    "compressed": c.compressed, "blob_size": len(c.blob)}
             return row, holders, sent
@@ -131,7 +140,7 @@ class Transfer:
         )
         manifest_blob = self.codec.seal_manifest(manifest, self.keys.kek)
         manifest_id = self.codec.sha256_hex(manifest_blob)
-        manifest_holders, _ = await self._store_object(manifest_id, manifest_blob, sem)
+        manifest_holders, _ = await self._store_object(manifest_id, manifest_blob, sem, rank)
 
         async with self._catalog_lock:
             self.catalog[file_uuid] = {
@@ -162,7 +171,8 @@ class Transfer:
             chunks=[{"index": r["index"], "chunk_id": r["chunk_id"], "holders": h} for r, h, _ in placed],
         )
 
-    async def _store_object(self, object_id: str, blob: bytes, sem: asyncio.Semaphore) -> tuple[list[str], int]:
+    async def _store_object(self, object_id: str, blob: bytes, sem: asyncio.Semaphore,
+                            rank=rank_for_placement) -> tuple[list[str], int]:
         """Ensure `replication` live copies on distinct hosts. Returns (holders, copies sent).
 
         Copies that already exist on live distinct hosts are reused, which is what
@@ -171,7 +181,7 @@ class Transfer:
             existing = self._live_holders_by_host(object_id)
             holders = list(existing.values())
             sent = 0
-            candidates = rank_for_placement(object_id, self.peers.alive(), set(existing))
+            candidates = rank(object_id, self.peers.alive(), set(existing))
             i = 0
             while len(holders) < self.replication and i < len(candidates):
                 batch = candidates[i : i + self.replication - len(holders)]
@@ -200,7 +210,7 @@ class Transfer:
 
     # ---------- download ----------
 
-    async def download(self, file_uuid: str, dst: BinaryIO) -> Manifest:
+    async def download(self, file_uuid: str, dst: BinaryIO, retrieval: str = "eta") -> Manifest:
         """Write the file to dst in order, fetching up to `parallel` chunks ahead.
 
         Raises IntegrityError after writing if the whole-file SHA-256 doesn't match,
@@ -208,11 +218,12 @@ class Transfer:
         entry = self.catalog.get(file_uuid)
         if entry is None:
             raise FileNotFoundError(file_uuid)
+        rank = RETRIEVALS[retrieval]
         manifest = await self._load_manifest(entry["manifest_id"])
         dek = self.codec.unwrap_key(self.keys.kek, manifest.wrapped_dek)
 
         async def one(c: dict) -> bytes:
-            blob = await self._fetch(c["chunk_id"], c["plain_size"])
+            blob = await self._fetch(c["chunk_id"], c["plain_size"], rank)
             return await asyncio.to_thread(self.codec.decode_chunk, blob, file_uuid, c["compressed"], dek)
 
         pending = iter(sorted(manifest.chunks, key=lambda c: c["index"]))
@@ -239,16 +250,16 @@ class Transfer:
             raise IntegrityError(f"{file_uuid}: reconstructed file hash mismatch")
         return manifest
 
-    async def _fetch(self, object_id: str, size: int) -> bytes:
+    async def _fetch(self, object_id: str, size: int, rank=rank_for_retrieval) -> bytes:
         holders = [p for n in self.locations.holders(object_id) if (p := self.peers.get(n))]
         tried: set[str] = set()
-        for p in rank_for_retrieval(holders, size):
+        for p in rank(holders, size):
             tried.add(p.node_id)
             if (blob := await self._get(p, object_id)) is not None:
                 return blob
         # The location map is soft state and may be stale: ask everyone else before giving up.
         others = [p for p in self.peers.alive() if p.node_id not in tried]
-        for p in rank_for_retrieval(others, size):
+        for p in rank(others, size):
             if (blob := await self._get(p, object_id)) is not None:
                 return blob
         raise ChunkUnavailable(object_id)
