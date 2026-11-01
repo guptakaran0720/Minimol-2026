@@ -194,3 +194,25 @@ def test_create_router_from_node_with_dev_fake_codec(cluster, tmp_path, monkeypa
     assert c.get(f"/files/{file_uuid}").content == data
     assert c.get("/stats").json()["codec"].startswith("FAKE")
     assert (Path(tmp_path) / "user").is_dir()
+
+
+def test_sync_loop_picks_up_files_uploaded_elsewhere():
+    import asyncio
+    from node.contracts import owner_salt
+    from node.transfer import Transfer
+    net, table, client, locs, codec = make_cluster(4)
+    keys = codec.derive_master(LOGIN["passphrase"], owner_salt(LOGIN["username"]))
+    here = Transfer(keys, codec, table, client, locs, chunk_size=CHUNK)
+    elsewhere = Transfer(keys, codec, table, client, locs, chunk_size=CHUNK)
+
+    async def scenario():
+        await here.recover()
+        task = asyncio.create_task(api_user.sync_forever(here, 0.01))
+        import io
+        res = await elsewhere.upload(io.BytesIO(b"hello" * 400), "x.txt")
+        await asyncio.sleep(0.1)
+        task.cancel()
+        return res.file_uuid
+
+    file_uuid = asyncio.run(scenario())
+    assert file_uuid in here.catalog
