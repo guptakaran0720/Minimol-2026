@@ -87,8 +87,9 @@ async def _every(interval: float, name: str, fn) -> None:
 
 def localhost_only(settings: Settings):
     def check(request: Request) -> None:
-        if not user_api_client_ok(request.client.host if request.client else None, settings.user_api_allow):
-            raise HTTPException(403, "user API is only served to localhost")
+        host = request.client.host if request.client else None
+        if not user_api_client_ok(host, settings.user_api_allow):
+            raise HTTPException(403, f"user API is only served to localhost (request from {host}; see USER_API_ALLOW)")
     return check
 
 
