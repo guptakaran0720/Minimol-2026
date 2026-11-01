@@ -10,14 +10,18 @@ Recover:  highest valid index version across peers -> manifests -> catalog.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import time
 import uuid
+from collections import deque
 from dataclasses import asdict
 from pathlib import Path
+from typing import BinaryIO
 
 from node.contracts import (
+    CHUNK_SIZE,
     REPLICATION,
     Codec,
     LocationMap,
@@ -56,7 +60,9 @@ class Transfer:
         replication: int = REPLICATION,
         parallel: int = 4,
         catalog_path: Path | None = None,
+        chunk_size: int = CHUNK_SIZE,
     ):
+        self.chunk_size = chunk_size
         self.keys = keys
         self.codec = codec
         self.peers = peers
@@ -73,7 +79,11 @@ class Transfer:
 
     # ---------- upload ----------
 
-    async def upload(self, data: bytes, name: str) -> UploadResult:
+    async def upload(self, src: BinaryIO, name: str) -> UploadResult:
+        """Read src CHUNK_SIZE at a time; at most `parallel` chunks are in memory at once.
+
+        Re-uploading a name reuses its file_uuid + DEK (version + 1), so unchanged
+        chunks encode to the same chunk_id and are not sent again (delta sync)."""
         prev = self.latest_by_name(name)
         if prev:
             old = await self._load_manifest(prev["manifest_id"])
@@ -82,20 +92,41 @@ class Transfer:
         else:
             file_uuid, version, dek = str(uuid.uuid4()), 1, os.urandom(32)
 
-        chunks = await asyncio.to_thread(self.codec.encode_file, data, file_uuid, dek)
         sem = asyncio.Semaphore(self.parallel)
-        placed = await asyncio.gather(*(self._store_object(c.chunk_id, c.blob, sem) for c in chunks))
 
+        async def encode_and_store(plain: bytes, index: int) -> tuple[dict, list[str], int]:
+            c = await asyncio.to_thread(self.codec.encode_chunk, plain, index, file_uuid, dek)
+            holders, sent = await self._store_object(c.chunk_id, c.blob, sem)
+            row = {"index": c.index, "chunk_id": c.chunk_id, "plain_size": c.plain_size,
+                   "compressed": c.compressed, "blob_size": len(c.blob)}
+            return row, holders, sent
+
+        hasher, size, index = hashlib.sha256(), 0, 0
+        window: deque[asyncio.Task] = deque()
+        placed: list[tuple[dict, list[str], int]] = []
+        try:
+            while plain := await asyncio.to_thread(read_full, src, self.chunk_size):
+                hasher.update(plain)
+                size += len(plain)
+                window.append(asyncio.create_task(encode_and_store(plain, index)))
+                index += 1
+                if len(window) >= self.parallel:
+                    placed.append(await window.popleft())
+            while window:
+                placed.append(await window.popleft())
+        except BaseException:
+            for task in window:
+                task.cancel()
+            raise
+
+        rows = [row for row, _, _ in placed]
         manifest = Manifest(
             file_uuid=file_uuid,
             name=name,
-            size=len(data),
-            sha256=self.codec.sha256_hex(data),
+            size=size,
+            sha256=hasher.hexdigest(),
             wrapped_dek=self.codec.wrap_key(self.keys.kek, dek),
-            chunks=[
-                {"index": c.index, "chunk_id": c.chunk_id, "plain_size": c.plain_size, "compressed": c.compressed}
-                for c in chunks
-            ],
+            chunks=[{k: r[k] for k in ("index", "chunk_id", "plain_size", "compressed")} for r in rows],
             version=version,
         )
         manifest_blob = self.codec.seal_manifest(manifest, self.keys.kek)
@@ -108,27 +139,27 @@ class Transfer:
                 "name": name,
                 "manifest_id": manifest_id,
                 "version": version,
-                "size": len(data),
+                "size": size,
                 "sha256": manifest.sha256,
-                "chunk_ids": [c.chunk_id for c in chunks],
+                "chunk_ids": [r["chunk_id"] for r in rows],
             }
             await self._publish_index()
             self._save_catalog()
 
-        copies = [len(h) for h, _ in placed] + [len(manifest_holders)]
+        copies = [len(h) for _, h, _ in placed] + [len(manifest_holders)]
         return UploadResult(
             file_uuid=file_uuid,
             manifest_id=manifest_id,
             name=name,
             version=version,
-            original_bytes=len(data),
-            encoded_bytes=sum(len(c.blob) for c in chunks),
-            sent_bytes=sum(sent * len(c.blob) for c, (_, sent) in zip(chunks, placed)),
-            replicated_bytes=sum(len(c.blob) * len(h) for c, (h, _) in zip(chunks, placed)),
-            sent_chunks=sum(1 for _, sent in placed if sent),
-            reused_chunks=sum(1 for _, sent in placed if not sent),
+            original_bytes=size,
+            encoded_bytes=sum(r["blob_size"] for r in rows),
+            sent_bytes=sum(sent * r["blob_size"] for r, _, sent in placed),
+            replicated_bytes=sum(r["blob_size"] * len(h) for r, h, _ in placed),
+            sent_chunks=sum(1 for _, _, sent in placed if sent),
+            reused_chunks=sum(1 for _, _, sent in placed if not sent),
             status="durable" if min(copies) >= self.replication else "degraded",
-            chunks=[{"index": c.index, "chunk_id": c.chunk_id, "holders": h} for c, (h, _) in zip(chunks, placed)],
+            chunks=[{"index": r["index"], "chunk_id": r["chunk_id"], "holders": h} for r, h, _ in placed],
         )
 
     async def _store_object(self, object_id: str, blob: bytes, sem: asyncio.Semaphore) -> tuple[list[str], int]:
@@ -169,24 +200,44 @@ class Transfer:
 
     # ---------- download ----------
 
-    async def download(self, file_uuid: str) -> bytes:
+    async def download(self, file_uuid: str, dst: BinaryIO) -> Manifest:
+        """Write the file to dst in order, fetching up to `parallel` chunks ahead.
+
+        Raises IntegrityError after writing if the whole-file SHA-256 doesn't match,
+        so callers must write to a temp file and only keep it on success."""
         entry = self.catalog.get(file_uuid)
         if entry is None:
             raise FileNotFoundError(file_uuid)
         manifest = await self._load_manifest(entry["manifest_id"])
         dek = self.codec.unwrap_key(self.keys.kek, manifest.wrapped_dek)
-        sem = asyncio.Semaphore(self.parallel)
 
         async def one(c: dict) -> bytes:
-            async with sem:
-                blob = await self._fetch(c["chunk_id"], c["plain_size"])
+            blob = await self._fetch(c["chunk_id"], c["plain_size"])
             return await asyncio.to_thread(self.codec.decode_chunk, blob, file_uuid, c["compressed"], dek)
 
-        parts = await asyncio.gather(*(one(c) for c in sorted(manifest.chunks, key=lambda c: c["index"])))
-        data = b"".join(parts)
-        if self.codec.sha256_hex(data) != manifest.sha256:
+        pending = iter(sorted(manifest.chunks, key=lambda c: c["index"]))
+        window: deque[asyncio.Task] = deque()
+
+        def launch_next() -> None:
+            if (c := next(pending, None)) is not None:
+                window.append(asyncio.create_task(one(c)))
+
+        hasher = hashlib.sha256()
+        try:
+            for _ in range(self.parallel):
+                launch_next()
+            while window:
+                plain = await window.popleft()
+                launch_next()
+                hasher.update(plain)
+                await asyncio.to_thread(dst.write, plain)
+        except BaseException:
+            for task in window:
+                task.cancel()
+            raise
+        if hasher.hexdigest() != manifest.sha256:
             raise IntegrityError(f"{file_uuid}: reconstructed file hash mismatch")
-        return data
+        return manifest
 
     async def _fetch(self, object_id: str, size: int) -> bytes:
         holders = [p for n in self.locations.holders(object_id) if (p := self.peers.get(n))]
@@ -327,6 +378,19 @@ class Transfer:
             tmp = self.catalog_path.with_suffix(".tmp")
             tmp.write_text(json.dumps({"catalog": self.catalog, "index_version": self.index_version}))
             tmp.replace(self.catalog_path)
+
+
+def read_full(src: BinaryIO, n: int) -> bytes:
+    """Read exactly n bytes unless EOF. Streams may return short reads, and
+    delta sync needs every chunk boundary at a fixed multiple of CHUNK_SIZE."""
+    parts, got = [], 0
+    while got < n:
+        part = src.read(n - got)
+        if not part:
+            break
+        parts.append(part)
+        got += len(part)
+    return b"".join(parts)
 
 
 def result_dict(r: UploadResult) -> dict:

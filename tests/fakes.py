@@ -19,16 +19,9 @@ def sha(b: bytes) -> str:
 
 
 class FakeCodec:
-    def __init__(self, chunk_size: int = 1024):
-        self.chunk_size = chunk_size
-
-    def encode_file(self, data, file_uuid, dek):
-        out = []
-        for i in range(0, len(data), self.chunk_size):
-            plain = data[i : i + self.chunk_size]
-            blob = dek[:4] + file_uuid.encode()[:8] + plain
-            out.append(EncodedChunk(i // self.chunk_size, sha(blob), blob, len(plain), False))
-        return out
+    def encode_chunk(self, plain, index, file_uuid, dek):
+        blob = dek[:4] + file_uuid.encode()[:8] + plain
+        return EncodedChunk(index, sha(blob), blob, len(plain), False)
 
     def decode_chunk(self, blob, file_uuid, compressed, dek):
         assert blob[:12] == dek[:4] + file_uuid.encode()[:8], "wrong key/file"
@@ -167,6 +160,15 @@ class FakeLocationMap:
     def note(self, chunk_id, node_id):
         self.map.setdefault(chunk_id, set()).add(node_id)
 
+    def replace_inventory(self, node_id, chunk_ids):
+        self.forget(node_id)
+        for cid in chunk_ids:
+            self.note(cid, node_id)
+
+    def forget(self, node_id):
+        for holders in self.map.values():
+            holders.discard(node_id)
+
     def refresh(self):
         """What inventory polling would converge to (dead peers keep their last inventory)."""
         self.map = {}
@@ -201,8 +203,11 @@ class FakeStore:
     def used_bytes(self):
         return sum(map(len, self._s().values()))
 
+    def free_bytes(self):
+        return GB - self.used_bytes()
 
-def make_cluster(n: int = 4, chunk_size: int = 1024):
+
+def make_cluster(n: int = 4):
     net = FakeNetwork()
     peers = []
     for i in range(n):
@@ -210,4 +215,4 @@ def make_cluster(n: int = 4, chunk_size: int = 1024):
         net.add_node(node_id)
         peers.append(Peer(node_id=node_id, host_id=f"host{i}", addr=f"10.0.0.{i}:8000", free_bytes=GB))
     table = FakePeerTable(peers)
-    return net, table, FakeClient(net), FakeLocationMap(net), FakeCodec(chunk_size)
+    return net, table, FakeClient(net), FakeLocationMap(net), FakeCodec()
