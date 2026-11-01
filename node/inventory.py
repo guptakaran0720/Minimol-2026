@@ -2,10 +2,16 @@
 
 Soft state: every 10 s each reachable peer's list replaces what we knew about it.
 Dead peers keep their last inventory, so repair can see which copy went missing.
+
+The same round re-measures tier-2 (slow) peers by fetching one chunk they hold:
+nothing else sends them traffic, so without this they could never leave tier 2.
 """
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import random
+import time
 from collections.abc import Iterable
 
 from node.chunkstore import DiskChunkStore
@@ -43,6 +49,9 @@ class LocationMap:
         self.replace_inventory(node_id, ())
         self._by_node.pop(node_id, None)
 
+    def chunks_of(self, node_id: str) -> set[str]:
+        return set(self._by_node.get(node_id, ()))
+
     def chunk_count(self) -> int:
         return len(self._by_chunk)
 
@@ -59,3 +68,21 @@ async def inventory_once(locations: LocationMap, table: PeerTable, client, store
 
     others = [p for p in table.all() if p.node_id != table.self_id and p.state != "dead"]
     await asyncio.gather(*(pull(p) for p in others))
+    await asyncio.gather(*(probe_slow(locations, table, client, p) for p in others if p.tier == 2))
+
+
+async def probe_slow(locations: LocationMap, table: PeerTable, client, peer) -> None:
+    """One real chunk transfer from a slow peer, as a fresh bandwidth sample."""
+    held = sorted(locations.chunks_of(peer.node_id))
+    if not held:
+        return
+    chunk_id = random.choice(held)
+    started = time.monotonic()
+    try:
+        blob = await client.get_chunk(peer, chunk_id)
+    except Exception:
+        table.record_failure(peer.node_id)
+        return
+    if blob is None or hashlib.sha256(blob).hexdigest() != chunk_id:
+        return
+    table.record_transfer(peer.node_id, len(blob), time.monotonic() - started)

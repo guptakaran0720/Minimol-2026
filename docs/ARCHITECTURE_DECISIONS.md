@@ -113,7 +113,7 @@ How metadata is stored:
   - Counter: it needs stored state, and every join or leave reshuffles placement. Rendezvous hashing moves the minimum number of chunks when membership changes, and it is about 15 lines of code ([IETF weighted HRW draft](https://datatracker.ietf.org/doc/html/draft-ietf-bess-weighted-hrw-01)).
 - **New design:**
   - **Eligible peers:** alive, quota ≥ 2 MiB free, and a host_id that doesn't already hold a copy.
-  - **Tier 1:** healthy peers. **Tier 2:** slow peers. A peer moves to tier 2 when its transfer-time average stays above 3× the cluster median for 30 s.
+  - **Tier 1:** healthy peers. **Tier 2:** slow peers. A peer moves to tier 2 when its transfer-time average stays above 3× the cluster median for 30 s, and back after 30 s at or below it. A tier-2 peer gets no traffic, so every 10 s each node fetches one chunk it holds as a fresh measurement; otherwise it could never leave tier 2.
   - Within a tier, each peer's rank key is `-w / ln(u)`, where:
     - `u = (int.from_bytes(sha256(chunk_id + node_id)[:8]) + 0.5) / 2**64`, so `u` is strictly between 0 and 1,
     - `w` is a fixed capacity weight, always greater than 0.
@@ -170,6 +170,7 @@ How metadata is stored:
 - **Counter to the original:** With no authentication, anyone on the Wi-Fi can fill peers' disks or poison the peer table.
 - **New design:**
   - Every peer request carries `HMAC-SHA256(cluster_key, method|path|node_id|ts|sha256(body))` and is accepted only within ±30 s of the timestamp. Signing `node_id` (the `X-Node` header) stops a captured request being replayed under another node's name.
+  - Every answer to an authenticated request is signed back: `X-Resp-Sig = HMAC-SHA256(cluster_key, RESPONSE|status|request X-Sig|node_id|sha256(body))`, with the responder in `X-Node`. The client rejects unsigned answers and answers from a different node than the one it called. Without this, a stranger on the Wi-Fi could answer `/health` and receive chunks, or answer `HEAD` with a fake "I have it".
   - Per-node disk quota; a full node returns `507`.
   - Body size caps: chunk ≤ 1 MiB + 64 B, upload ≤ 256 MiB, otherwise `413`. FastAPI and Starlette have no default cap ([starlette#2155](https://github.com/encode/starlette/issues/2155)).
   - No peer `DELETE` endpoint.
@@ -182,6 +183,7 @@ How metadata is stored:
 |---|---|---|
 | Peer returns corrupted or fake chunk | Re-hash against chunk ID, then the GCM tag, then the whole-file SHA-256 | MVP |
 | Unauthorized node joins | Cluster HMAC | MVP |
+| Stranger answers as a peer (fake `/health`, fake `HEAD 200`) | Signed responses bound to the request signature | MVP |
 | Disk exhaustion or huge upload | Quota (507) and body caps (413) | MVP |
 | Decompression bomb | `max_output_size = 1 MiB` per chunk | MVP |
 | Index tampering or rollback | Ed25519 signature, take the highest version across holders | MVP (rollback only reduced) |
@@ -195,8 +197,8 @@ How metadata is stored:
 
 - **Counter:** Venue Wi-Fi often blocks multicast and isolates clients from each other.
 - **Verdict: CHANGE.**
-  - A typed seed list, plus `GET /peers` gossip, so knowing one peer is enough to find all of them.
-  - mDNS (zeroconf) is optional polish.
+  - A typed seed list, plus `GET /peers` gossip, so knowing one peer is enough to find all of them. Callers also send their address in `X-Addr`, so a seed learns about nodes that only know it.
+  - mDNS (zeroconf, `_minimol._tcp`) is on by default but best-effort; set `MDNS=0` to turn it off. Its record carries a tag derived from the cluster key, so other teams' nodes aren't probed.
   - Bring our own hotspot.
   - Discovering a peer is not the same as being able to connect to it. A peer counts as alive only after an authenticated heartbeat succeeds.
 

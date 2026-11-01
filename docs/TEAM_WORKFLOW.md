@@ -25,7 +25,7 @@ Do these in order:
    ```bash
    pip download -r requirements.txt -r requirements-dev.txt -d wheels/
    ```
-3. On **every laptop**, allow Python through the firewall. From another laptop, run `curl http://<ip>:8000/health`.
+3. On **every laptop**, allow Python through the firewall. From another laptop, run `curl http://<ip>:8000/health`. A `401` is a pass: the laptop is reachable, and curl just isn't signing its request.
 4. Write `node/contracts.py` together: the dataclasses and function signatures below, with the bodies left as `...`. After this, **contracts.py is frozen.** Any change needs a PR approved by P1, P2 and P3.
 
 ### Python contracts
@@ -46,7 +46,7 @@ Points everyone must match:
 
 ### HTTP API contract
 
-**Peer API (P2):** every route needs the HMAC headers `X-Node`, `X-Ts`, `X-Sig`, where `X-Sig = HMAC-SHA256(cluster_key, method|path|X-Node|X-Ts|sha256(body))`.
+**Peer API (P2):** every route needs the HMAC headers `X-Node`, `X-Ts`, `X-Sig`, where `X-Sig = HMAC-SHA256(cluster_key, method|path|X-Node|X-Ts|sha256(body))`. Callers also send `X-Addr` (their own `ip:port`). Every answer except a `401` carries `X-Node` and `X-Resp-Sig` (ARCHITECTURE_DECISIONS.md §12); `node/peer_client.py` checks them.
 
 | Method | Path | Response |
 |---|---|---|

@@ -25,7 +25,7 @@ from node.api_peer import create_peer_app
 from node.chunkstore import DiskChunkStore, IndexStore
 from node.config import Settings
 from node.contracts import Peer
-from node.discovery import add_seeds, gossip_once
+from node.discovery import MdnsDiscovery, add_seeds, gossip_once
 from node.inventory import LocationMap, inventory_once
 from node.peer_client import HttpPeerClient
 from node.peers import PeerTable, heartbeat_once
@@ -111,6 +111,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.repairer = repairer
             loops.append(repairer.run_forever())
         tasks = [asyncio.create_task(c) for c in loops]
+        mdns = MdnsDiscovery(n.peers, settings.node_id, settings.advertise_addr, settings.cluster_key)
+        if settings.mdns:
+            await mdns.start()
         log.info("node %s (host %s) at %s, seeds %s", settings.node_id, settings.host_id,
                  settings.advertise_addr, settings.seeds or "none")
         try:
@@ -119,6 +122,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            await mdns.stop()
             await n.client.aclose()
 
     app = create_peer_app(settings, node.store, node.index_store, node.peers, verify_index, lifespan)
