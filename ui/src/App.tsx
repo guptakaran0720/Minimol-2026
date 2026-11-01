@@ -80,7 +80,7 @@ export default function App() {
           </div>
           <div>
             <span className="big">{s.repair.total_copies}</span>
-            <span className="muted">repair copies</span>
+            <span className="muted">repair copies by this node</span>
           </div>
         </div>
       )}
