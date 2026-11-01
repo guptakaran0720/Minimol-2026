@@ -364,11 +364,21 @@ Medians of 5 runs unless noted. Full tables in [docs/RESULTS.md](docs/RESULTS.md
 - **Network:** delta sync and repair move only missing chunks. Hedged reads add a second request only for the slow tail, after 2× ETA.
 
 ### Reproduce
+Cluster test and live A/B benchmark on the Docker cluster:
 ```bash
-docker compose up -d --build && scripts/docker_e2e.sh       # cluster test + live A/B benchmark
-python -m bench.bench --sim                                 # checks the benchmark script itself
-.venv/bin/python -m pytest -q                               # 181 tests
-python3 docs/img/make_charts.py                             # redraw these charts from RESULTS.md
+docker compose up -d --build && scripts/docker_e2e.sh
+```
+Check that the benchmark script itself works (simulated, not a measurement):
+```bash
+.venv/bin/python -m bench.bench --sim
+```
+Run the 181 tests:
+```bash
+.venv/bin/python -m pytest -q
+```
+Redraw these charts from RESULTS.md:
+```bash
+python3 docs/img/make_charts.py
 ```
 
 ---
@@ -403,24 +413,41 @@ flowchart LR
 ## Run it
 
 ### Docker (one machine, 4 nodes)
+Start the cluster, then open http://localhost:8001/ui/:
 ```bash
-docker compose up -d --build        # dashboard: http://localhost:8001/ui/
-docker compose stop node3           # watch it turn red after ~20 s, then the files heal
+docker compose up -d --build
+```
+Stop one node, watch it turn red after about 20 s, then watch the files heal:
+```bash
+docker compose stop node3
 ```
 More in [docs/DOCKER.md](docs/DOCKER.md).
 
 ### Real laptops (same network, or Tailscale across networks)
+Every command below can be pasted as is. Words in capitals (`SHARED_SECRET`, `LAPTOP1_IP`) are the only parts to replace.
+
+Once per laptop:
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-(cd ui && npm ci && npm run build)
-CLUSTER_KEY=<shared secret, 16+ chars> NODE_ID=laptop-1 HOST_ID=laptop-1 ADVERTISE_ADDR=<my ip>:8000 \
-  .venv/bin/python -m node.main                              # laptop 1 (seed)
-CLUSTER_KEY=<same> NODE_ID=laptop-2 HOST_ID=laptop-2 ADVERTISE_ADDR=<my ip>:8000 SEEDS=<laptop-1 ip>:8000 \
-  .venv/bin/python -m node.main                              # every other laptop
 ```
-Then open `http://localhost:8000/ui/` and unlock with a username and a passphrase of 12+ characters.
+```bash
+(cd ui && npm ci && npm run build)
+```
 
-- **Connectivity check:** `curl http://<ip>:8000/health` from another laptop must return 401 (reachable, unsigned request rejected).
+Laptop 1 (the seed). On Linux, use `$(hostname -I | awk '{print $1}')` instead of `$(ipconfig getifaddr en0)`:
+```bash
+CLUSTER_KEY='SHARED_SECRET' NODE_ID=laptop-1 HOST_ID=laptop-1 ADVERTISE_ADDR=$(ipconfig getifaddr en0):8000 .venv/bin/python -m node.main
+```
+
+Every other laptop: the same key, its own number, and laptop 1's address as the seed:
+```bash
+CLUSTER_KEY='SHARED_SECRET' NODE_ID=laptop-2 HOST_ID=laptop-2 ADVERTISE_ADDR=$(ipconfig getifaddr en0):8000 SEEDS=LAPTOP1_IP:8000 .venv/bin/python -m node.main
+```
+`SHARED_SECRET` must be at least 16 characters and identical on every laptop; `NODE_ID` and `HOST_ID` must be different on each.
+
+Then open http://localhost:8000/ui/ and unlock with a username and a passphrase of 12+ characters.
+
+- **Connectivity check:** from another laptop, `curl -s -o /dev/null -w "%{http_code}\n" http://LAPTOP1_IP:8000/health` must print `401` (reachable, unsigned request rejected).
 - **Across networks:** see [docs/TAILSCALE.md](docs/TAILSCALE.md).
 
 ## Documentation

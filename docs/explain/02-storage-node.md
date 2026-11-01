@@ -51,7 +51,7 @@
 - One shared cluster key, no per-node identity. Mutual TLS is (planned).
 - Traffic is HTTP, not TLS. Payloads are ciphertext, but headers and sizes are visible.
 - A replay inside the 30 s window is possible. It only affects idempotent requests (re-PUT the same chunk, re-read ciphertext).
-- The store doesn't re-hash chunks on read or scrub the disk in the background. The reader re-hashes every blob it receives, so a corrupt copy is detected and skipped, but not proactively found (scrubbing is planned).
+- The store doesn't re-hash a chunk when serving it; the reader re-hashes every blob it receives, so a corrupt copy is detected and skipped. Rot is also found proactively: a background scrub re-hashes 8 stored chunks per second (`node/scrub.py`) and quarantines any that fail, and repair restores them.
 - The directory entry isn't fsynced after rename, so a power cut right after a write could lose that one chunk (the hash check still prevents corruption).
 - `/health` free space is the node's own claim. A lying node can only cause failed PUTs, which move on to the next peer.
 
@@ -67,4 +67,4 @@ A: Without it, a stranger could answer `/health` as a fake peer and receive chun
 
 **Q: How do you know a chunk wasn't corrupted on disk?**
 A: Its name is its SHA-256, and the downloader re-hashes every blob it receives before using it, then the GCM tag is checked too. A bad copy is skipped and that peer is penalised, and the next holder is tried.
-*Follow-up:* "Do you find corruption before someone reads it?" → Not yet. Background scrubbing is planned.
+*Follow-up:* "Do you find corruption before someone reads it?" → Yes. The background scrub re-hashes every stored chunk, quarantines a bad one within its pass, and repair copies a good one back (16–20 s measured on 4 local nodes).

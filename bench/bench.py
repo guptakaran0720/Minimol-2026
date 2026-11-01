@@ -252,7 +252,7 @@ def bench_delta(b, size: int, run_id: str) -> dict:
     v1 = make_csv(size, seed=7)
     v2 = v1 + make_csv(max(size // 100, 1), seed=8)          # append ~1% new rows
     name = f"bench-delta-{run_id}"
-    first, _ = b.upload(v1, name)
+    b.upload(v1, name)
     second, up_s = b.upload(v2, name)
     got, _ = b.download(second["file_uuid"])
     return {

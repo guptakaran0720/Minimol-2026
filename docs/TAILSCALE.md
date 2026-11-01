@@ -24,23 +24,25 @@
 
 Same commands as the campus run, with three changes: `ADVERTISE_ADDR` and `SEEDS` use the `100.x` addresses, and `MDNS=0` (multicast doesn't cross Tailscale, and it would advertise the Wi-Fi address instead).
 
+Replace only the words in capitals: `SHARED_SECRET` (the team's cluster key, 16+ characters), `LAPTOP1_TS_IP` (laptop 1's `100.x` address) and `N`.
+
 Laptop 1 (seed):
 ```bash
-CLUSTER_KEY='1234567891234567' NODE_ID=laptop-1 HOST_ID=laptop-1 MDNS=0 ADVERTISE_ADDR=$(tailscale ip -4):8000 .venv/bin/python -m node.main
+CLUSTER_KEY='SHARED_SECRET' NODE_ID=laptop-1 HOST_ID=laptop-1 MDNS=0 ADVERTISE_ADDR=$(tailscale ip -4):8000 .venv/bin/python -m node.main
 ```
 
-Laptops 2 and 3 (replace `N`, and `<laptop-1 100.x>` with laptop 1's Tailscale address):
+Laptops 2 and 3:
 ```bash
-CLUSTER_KEY='1234567891234567' NODE_ID=laptop-N HOST_ID=laptop-N MDNS=0 ADVERTISE_ADDR=$(tailscale ip -4):8000 SEEDS=<laptop-1 100.x>:8000 .venv/bin/python -m node.main
+CLUSTER_KEY='SHARED_SECRET' NODE_ID=laptop-N HOST_ID=laptop-N MDNS=0 ADVERTISE_ADDR=$(tailscale ip -4):8000 SEEDS=LAPTOP1_TS_IP:8000 .venv/bin/python -m node.main
 ```
 
 If a laptop ran on campus Wi-Fi before, stop its old node first: its peers would otherwise keep the old Wi-Fi address until it re-announces. Data directories can stay; chunks are the same.
 
 ## 3. Check the cluster
 
-From every laptop, every other laptop must answer `401` (reachable; unsigned request rejected):
+From every laptop, every other laptop must answer `401` (reachable; unsigned request rejected). Replace `OTHER_TS_IP` with the other laptop's `100.x` address:
 ```bash
-curl -s -o /dev/null -m 5 -w "%{http_code}\n" http://<other 100.x>:8000/health
+curl -s -o /dev/null -m 5 -w "%{http_code}\n" http://OTHER_TS_IP:8000/health
 ```
 
 All three must be `alive`, with `100.x` addresses:
@@ -48,7 +50,7 @@ All three must be `alive`, with `100.x` addresses:
 curl -s localhost:8000/stats | python3 -c "import json,sys; s=json.load(sys.stdin); print([(p['node_id'], p['addr'], p['state'], p['rtt_ms']) for p in s['peers']])"
 ```
 
-Open http://localhost:8000/ui/ and unlock as `team-minimol`. The Peers panel shows each link's RTT; the Cluster timeline shows joins, failures and repairs as they happen.
+Open http://localhost:8000/ui/ and unlock with the team login. The Peers panel shows each link's RTT; the Cluster timeline shows joins, failures and repairs as they happen.
 
 ## 4. Measure
 
@@ -56,7 +58,7 @@ Run on **laptop 1**, against its own node. Nothing below is estimated: record on
 
 **a. Benchmark** (files, compression, delta sync, upload and download speed). Results land in `bench/results/`:
 ```bash
-.venv/bin/python -m bench.bench --target http://127.0.0.1:8000 --username team-minimol --passphrase '123456789123' --reps 5 --csv-mb 8 --random-mb 2
+.venv/bin/python -m bench.bench --target http://127.0.0.1:8000 --username TEAM_USERNAME --passphrase 'TEAM_PASSPHRASE' --reps 5 --csv-mb 8 --random-mb 2
 ```
 Smaller files than the campus run (`--csv-mb 8`), because relayed links can be slow. Run `.venv/bin/python -m bench.bench --help` for `--skip` if a step takes too long.
 

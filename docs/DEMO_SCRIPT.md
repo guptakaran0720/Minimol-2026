@@ -14,11 +14,11 @@ All timings below are from our run on 1 November ([RESULTS.md](RESULTS.md), Run 
 ## Before going on stage (T-20 min)
 
 1. **Network:** all 3 laptops on the same network. Our own hotspot is safest; campus Wi-Fi worked in testing.
-2. **Laptop 1's IP:** note it as `<IP1>`:
+2. **Laptop 1's IP:** note it; it replaces `LAPTOP1_IP` below:
    ```bash
    ipconfig getifaddr en0
    ```
-3. **Fresh secrets:** pick a random cluster key, and a new team username + passphrase:
+3. **Fresh secrets:** pick a random cluster key (it replaces `SHARED_SECRET` below), and a new team username + passphrase:
    ```bash
    python3 -c "import secrets; print(secrets.token_urlsafe(24))"
    ```
@@ -26,11 +26,11 @@ All timings below are from our run on 1 November ([RESULTS.md](RESULTS.md), Run 
 4. **Start all 3 nodes from scratch.** This also clears stale peers like the old `laptop-4`. Use one terminal per laptop and leave it visible.
    - **Laptop 1:**
      ```bash
-     CLUSTER_KEY='<KEY>' NODE_ID=laptop-1 HOST_ID=laptop-1 ADVERTISE_ADDR=<IP1>:8000 .venv/bin/python -m node.main
+     CLUSTER_KEY='SHARED_SECRET' NODE_ID=laptop-1 HOST_ID=laptop-1 ADVERTISE_ADDR=$(ipconfig getifaddr en0):8000 .venv/bin/python -m node.main
      ```
-   - **Laptops 2 and 3** (change the number in both places):
+   - **Laptops 2 and 3** (change the number in both places; replace `SHARED_SECRET` with the key and `LAPTOP1_IP` with laptop 1's address):
      ```bash
-     CLUSTER_KEY='<KEY>' NODE_ID=laptop-2 HOST_ID=laptop-2 ADVERTISE_ADDR=$(ipconfig getifaddr en0):8000 SEEDS=<IP1>:8000 .venv/bin/python -m node.main
+     CLUSTER_KEY='SHARED_SECRET' NODE_ID=laptop-2 HOST_ID=laptop-2 ADVERTISE_ADDR=$(ipconfig getifaddr en0):8000 SEEDS=LAPTOP1_IP:8000 .venv/bin/python -m node.main
      ```
 5. **Keep laptops awake:** run `caffeinate -i &` on each Mac.
 6. **Dashboard:**

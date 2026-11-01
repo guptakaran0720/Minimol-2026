@@ -52,9 +52,6 @@ class LocationMap:
     def chunks_of(self, node_id: str) -> set[str]:
         return set(self._by_node.get(node_id, ()))
 
-    def chunk_count(self) -> int:
-        return len(self._by_chunk)
-
 
 async def inventory_once(locations: LocationMap, table: PeerTable, client, store: DiskChunkStore) -> None:
     locations.replace_inventory(table.self_id, store.list_ids())

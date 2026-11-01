@@ -432,9 +432,9 @@
 **Q54. Can repair spread a corrupted copy?** · *Owner: P3*
 - **Answer:** No. Before copying, the leader re-hashes its own copy, and if it doesn't match the chunk ID it logs it and doesn't spread it. Receivers also re-check the hash on every PUT.
 - **Follow-up:** Do you scrub for bit rot in the background?
-- **Response:** No. Corruption is caught when a chunk is read or repaired, not proactively (planned).
-- **Show:** `test_corrupt_local_copy_is_not_spread`; Self-repair panel "failed its hash check; not spread" event.
-- **Admit:** A silently corrupted copy still counts toward the 3 until someone reads it.
+- **Response:** Yes. Every node re-hashes its own chunks in the background (8 per second). A chunk that fails is quarantined and dropped from the node's inventory, so peers count one copy fewer and repair copies a good one back. On 4 local nodes: quarantined within 1 s of a one-byte flip, good copy restored in 16–20 s.
+- **Show:** `test_corrupt_local_copy_is_not_spread`; `test_scrub_quarantines_corrupt_chunk_and_accepts_a_good_copy_again`; the cluster timeline's "failed its hash check: quarantined" event, then "repair copied".
+- **Admit:** Between scrub passes (about 2 minutes per 1,000 chunks) a rotten copy still counts toward the 3. Scrubbing checks a node's own disk; it doesn't prove a remote peer still holds its chunks.
 
 ## J. Metadata consistency and recovery
 

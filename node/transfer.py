@@ -17,7 +17,6 @@ import os
 import time
 import uuid
 from collections import deque
-from dataclasses import asdict
 from pathlib import Path
 from typing import BinaryIO
 
@@ -468,7 +467,3 @@ def read_full(src: BinaryIO, n: int) -> bytes:
         parts.append(part)
         got += len(part)
     return b"".join(parts)
-
-
-def result_dict(r: UploadResult) -> dict:
-    return asdict(r)
