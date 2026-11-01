@@ -98,13 +98,13 @@ def test_upload_keeps_at_most_parallel_chunks_in_flight():
     in_flight, peak = 0, 0
     original = t._store_object
 
-    async def tracked(object_id, blob, sem):
+    async def tracked(*args):
         nonlocal in_flight, peak
         in_flight += 1
         peak = max(peak, in_flight)
         try:
             await asyncio.sleep(0.001)
-            return await original(object_id, blob, sem)
+            return await original(*args)
         finally:
             in_flight -= 1
 

@@ -17,6 +17,7 @@ import os
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -91,6 +92,7 @@ async def recover(body: RecoverBody, st: UserState = Depends(state)) -> dict:
 async def upload(
     request: Request,
     name: str = Query(..., min_length=1, max_length=255),
+    placement: Literal["tiered", "random"] = "tiered",     # "random" = bench.py baseline only
     transfer: Transfer = Depends(unlocked),
 ) -> dict:
     declared = request.headers.get("content-length")
@@ -107,7 +109,7 @@ async def upload(
             spool.write(part)
         spool.seek(0)
         try:
-            result = await transfer.upload(spool, name)
+            result = await transfer.upload(spool, name, placement)
         except NotEnoughPeers as e:
             raise HTTPException(503, f"not enough peers accepted the data: {e}") from e
     out = asdict(result)
@@ -121,7 +123,11 @@ async def list_files(transfer: Transfer = Depends(unlocked)) -> list[dict]:
 
 
 @router.get("/files/{file_uuid}")
-async def download(file_uuid: str, transfer: Transfer = Depends(unlocked)) -> FileResponse:
+async def download(
+    file_uuid: str,
+    retrieval: Literal["eta", "random"] = "eta",            # "random" = bench.py baseline only
+    transfer: Transfer = Depends(unlocked),
+) -> FileResponse:
     entry = transfer.catalog.get(file_uuid)
     if entry is None:
         raise HTTPException(404, "unknown file")
@@ -129,7 +135,7 @@ async def download(file_uuid: str, transfer: Transfer = Depends(unlocked)) -> Fi
     fd, path = tempfile.mkstemp(prefix="dl-")
     try:
         with os.fdopen(fd, "wb") as dst:
-            await transfer.download(file_uuid, dst)
+            await transfer.download(file_uuid, dst, retrieval)
     except ChunkUnavailable as e:
         os.unlink(path)
         raise HTTPException(503, f"chunk unavailable on every reachable peer: {e}") from e

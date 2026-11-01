@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import random
 import statistics
 import time
 
@@ -78,6 +79,23 @@ def rank_for_retrieval(holders: list[Peer], size: int = CHUNK_SIZE) -> list[Peer
             eta_seconds(p, size, prior_rtt, prior_bw),
         ),
     )
+
+
+def rank_for_placement_baseline(chunk_id: str, peers: list[Peer], exclude_hosts: set[str],
+                                rng: random.Random | None = None) -> list[Peer]:
+    """Benchmark baseline: same eligibility and distinct hosts, but uniform random
+    order with no tiers or weights. Only bench.py should select it."""
+    ranked = rank_for_placement(chunk_id, [p for p in peers if p.state == "alive"], exclude_hosts)
+    (rng or random).shuffle(ranked)
+    return ranked
+
+
+def rank_for_retrieval_baseline(holders: list[Peer], size: int = CHUNK_SIZE,
+                                rng: random.Random | None = None) -> list[Peer]:
+    """Benchmark baseline: try live holders in random order, ignoring ETA."""
+    candidates = [p for p in holders if p.state != "dead"]
+    (rng or random).shuffle(candidates)
+    return candidates
 
 
 def repair_order(chunk_id: str, live_holder_ids: list[str]) -> list[str]:
