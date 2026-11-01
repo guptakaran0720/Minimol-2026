@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { api } from "../api";
 
+/** Takes the upload tile's place while the node is locked. */
 export function Unlock({ onDone }: { onDone: (msg: string) => void }) {
   const [username, setUsername] = useState("");
   const [passphrase, setPassphrase] = useState("");
@@ -30,32 +31,43 @@ export function Unlock({ onDone }: { onDone: (msg: string) => void }) {
   }
 
   return (
-    <section className="card unlock">
-      <h2>Unlock this node</h2>
-      <p className="muted">
-        Keys come from your username and passphrase. On a fresh laptop the same pair recovers every file from the peers.
-      </p>
-      <form onSubmit={submit} className="unlock-form">
-        <label>
-          Username
-          <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required />
-        </label>
-        <label>
-          Passphrase <span className="muted">(12+ characters)</span>
-          <input
-            type="password"
-            value={passphrase}
-            onChange={(e) => setPassphrase(e.target.value)}
-            autoComplete="current-password"
-            minLength={12}
-            required
-          />
-        </label>
-        <button type="submit" disabled={busy}>
-          {busy ? "Deriving keys…" : "Unlock and recover"}
-        </button>
-        {error && <p className="error">{error}</p>}
-      </form>
+    <section className="tile tile-blue tile-unlock s5 r2" aria-labelledby="unlock-title">
+      <span className="pill pill-white">Locked</span>
+      <div className="unlock-body">
+        <h2 id="unlock-title" className="drop-title">
+          Unlock
+          <br />
+          this laptop.
+        </h2>
+        <p className="drop-hint">
+          Keys come from your username and passphrase. On a fresh laptop the same pair recovers every file from the peers.
+        </p>
+        <form onSubmit={submit} className="unlock-form">
+          <label>
+            Username
+            <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required />
+          </label>
+          <label>
+            Passphrase <span className="label-hint">12+ characters</span>
+            <input
+              type="password"
+              value={passphrase}
+              onChange={(e) => setPassphrase(e.target.value)}
+              autoComplete="current-password"
+              minLength={12}
+              required
+            />
+          </label>
+          <button type="submit" className="btn btn-white" disabled={busy}>
+            {busy ? "Deriving keys…" : "Unlock and recover"}
+          </button>
+        </form>
+        {error && (
+          <p className="tile-note tile-note-error" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
     </section>
   );
 }

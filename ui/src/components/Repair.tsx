@@ -1,55 +1,55 @@
 import type { Stats } from "../api";
+import { clock } from "../identity";
 
-function ago(t: number): string {
-  const s = Math.max(0, Date.now() / 1000 - t);
-  return s < 60 ? `${s.toFixed(0)} s ago` : `${(s / 60).toFixed(0)} min ago`;
-}
-
-export function Repair({ repair }: { repair: Stats["repair"] }) {
+export function Repair({ repair, wide = false }: { repair: Stats["repair"]; wide?: boolean }) {
   const last = repair.last_round;
   return (
-    <section className="card">
-      <header className="card-head">
-        <h2>Self-repair</h2>
-        <span className="muted">every 10 s · this node</span>
-      </header>
-      <dl className="metrics compact">
+    <section className={`tile tile-white tile-list ${wide ? "s12" : "s5"}`} aria-labelledby="repair-title">
+      <div className="tile-head">
+        <h2 id="repair-title" className="tile-title">
+          Self-repair
+        </h2>
+        <span className="muted small">every 10 s · this laptop</span>
+      </div>
+      <dl className="stat-row">
         <div>
           <dt>Copies made</dt>
-          <dd className="big">{repair.total_copies}</dd>
+          <dd>{repair.total_copies}</dd>
         </div>
         <div>
           <dt>Chunks checked</dt>
           <dd>{last?.checked ?? "—"}</dd>
         </div>
         <div>
-          <dt>Waiting on suspect peer</dt>
+          <dt>Waiting on suspect</dt>
           <dd>{last?.waiting ?? "—"}</dd>
         </div>
         <div>
           <dt>Degraded</dt>
-          <dd className={last?.degraded ? "warn" : ""}>{last?.degraded ?? "—"}</dd>
+          <dd className={last?.degraded ? "warn-ink" : ""}>{last?.degraded ?? "—"}</dd>
         </div>
       </dl>
       {repair.events.length === 0 ? (
-        <p className="empty">No repairs yet. Stop a peer to watch chunks get re-copied.</p>
+        <p className="empty">No repairs yet. Close a laptop's lid to watch its chunks get re-copied.</p>
       ) : (
-        <ul className="events">
+        <ol className="events">
           {[...repair.events].reverse().map((e, i) => (
             <li key={`${e.t}-${i}`}>
-              <span className="muted">{ago(e.t)}</span>{" "}
-              {e.kind === "copied" ? (
-                <>
-                  copied chunk <span className="mono">{e.chunk}</span> → <span className="mono">{e.to}</span>
-                </>
-              ) : (
-                <>
-                  local copy of <span className="mono">{e.chunk}</span> failed its hash check; not spread
-                </>
-              )}
+              <time className="mono muted">{clock(e.t)}</time>
+              <span>
+                {e.kind === "copied" ? (
+                  <>
+                    copied chunk <span className="mono">{e.chunk}</span> → <span className="mono">{e.to}</span>
+                  </>
+                ) : (
+                  <span className="bad-ink">
+                    local copy of <span className="mono">{e.chunk}</span> failed its hash check; not spread
+                  </span>
+                )}
+              </span>
             </li>
           ))}
-        </ul>
+        </ol>
       )}
     </section>
   );
