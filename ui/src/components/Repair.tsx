@@ -1,55 +1,62 @@
-import type { Stats } from "../api";
+import type { Stats, Timeline } from "../api";
+import { clock } from "../identity";
 
-function ago(t: number): string {
-  const s = Math.max(0, Date.now() / 1000 - t);
-  return s < 60 ? `${s.toFixed(0)} s ago` : `${(s / 60).toFixed(0)} min ago`;
-}
-
-export function Repair({ repair }: { repair: Stats["repair"] }) {
+/** Repair and scrub counters. The events themselves are in the timeline tile and the ticker. */
+export function Repair({ repair, scrub }: { repair: Stats["repair"]; scrub: Timeline["scrub"] | null }) {
   const last = repair.last_round;
   return (
-    <section className="card">
-      <header className="card-head">
-        <h2>Self-repair</h2>
-        <span className="muted">every 10 s · this node</span>
-      </header>
-      <dl className="metrics compact">
+    <section className="tile tile-white tile-list s5" aria-labelledby="repair-title">
+      <div className="tile-head">
+        <h2 id="repair-title" className="tile-title">
+          Self-repair
+        </h2>
+        <span className="muted small">every 10 s · this laptop</span>
+      </div>
+      <dl className="stat-row">
         <div>
           <dt>Copies made</dt>
-          <dd className="big">{repair.total_copies}</dd>
+          <dd>{repair.total_copies}</dd>
         </div>
         <div>
           <dt>Chunks checked</dt>
           <dd>{last?.checked ?? "—"}</dd>
         </div>
         <div>
-          <dt>Waiting on suspect peer</dt>
+          <dt>Waiting on suspect</dt>
           <dd>{last?.waiting ?? "—"}</dd>
         </div>
         <div>
           <dt>Degraded</dt>
-          <dd className={last?.degraded ? "warn" : ""}>{last?.degraded ?? "—"}</dd>
+          <dd className={last?.degraded ? "warn-ink" : ""}>{last?.degraded ?? "—"}</dd>
         </div>
       </dl>
-      {repair.events.length === 0 ? (
-        <p className="empty">No repairs yet. Stop a peer to watch chunks get re-copied.</p>
+      <div className="tile-head">
+        <h3 className="tile-label">Background scrub</h3>
+        <span className="muted small">
+          {scrub?.last_pass_at ? `last full pass ${clock(scrub.last_pass_at)}` : "re-hashes every chunk on this disk"}
+        </span>
+      </div>
+      {scrub ? (
+        <dl className="stat-row">
+          <div>
+            <dt>Re-hashed</dt>
+            <dd>{scrub.checked}</dd>
+          </div>
+          <div>
+            <dt>Passes</dt>
+            <dd>{scrub.passes}</dd>
+          </div>
+          <div>
+            <dt>Quarantined</dt>
+            <dd className={scrub.quarantined ? "bad-ink" : ""}>{scrub.quarantined}</dd>
+          </div>
+          <div>
+            <dt>Missing</dt>
+            <dd className={scrub.missing ? "bad-ink" : ""}>{scrub.missing}</dd>
+          </div>
+        </dl>
       ) : (
-        <ul className="events">
-          {[...repair.events].reverse().map((e, i) => (
-            <li key={`${e.t}-${i}`}>
-              <span className="muted">{ago(e.t)}</span>{" "}
-              {e.kind === "copied" ? (
-                <>
-                  copied chunk <span className="mono">{e.chunk}</span> → <span className="mono">{e.to}</span>
-                </>
-              ) : (
-                <>
-                  local copy of <span className="mono">{e.chunk}</span> failed its hash check; not spread
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
+        <p className="empty">Scrub figures appear once this node's timeline answers.</p>
       )}
     </section>
   );

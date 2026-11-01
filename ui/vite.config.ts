@@ -9,6 +9,6 @@ export default defineConfig({
   base: "/ui/",
   plugins: [react()],
   server: {
-    proxy: Object.fromEntries(["/stats", "/files", "/recover"].map((p) => [p, node])),
+    proxy: Object.fromEntries(["/stats", "/files", "/recover", "/events"].map((p) => [p, node])),
   },
 });
