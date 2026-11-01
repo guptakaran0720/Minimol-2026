@@ -38,7 +38,7 @@ for i in $(seq 1 "$NODES"); do
   [ "$i" = "$DELAY_NODE" ] && delay=$DELAY_MS
   NODE_ID="node-$i" HOST_ID="host-$i" PORT=$port BIND_HOST=127.0.0.1 \
   ADVERTISE_ADDR="127.0.0.1:$port" SEEDS="127.0.0.1:$((BASE_PORT + 1))" \
-  DATA_DIR="$ROOT/node-$i" QUOTA_MB=$QUOTA_MB SIMULATED_DELAY_MS=$delay \
+  DATA_DIR="$ROOT/node-$i" QUOTA_MB=$QUOTA_MB SIMULATED_DELAY_MS=$delay MDNS=0 \
     "$PY" -m node.main >"$ROOT/logs/node-$i.log" 2>&1 &
   pids+=($!)
   echo "node-$i  127.0.0.1:$port  pid $!  delay ${delay}ms  log $ROOT/logs/node-$i.log"

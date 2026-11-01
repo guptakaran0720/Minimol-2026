@@ -193,3 +193,55 @@ def test_gossip_finds_peers_of_peers():
     client.up["c:1"] = health("c")
     beat(table, client)
     assert {p.node_id for p in table.alive()} == {"me", "b", "c"}
+
+
+def test_slow_peer_is_probed_and_recovers():
+    import hashlib
+
+    clock, table, client = setup()
+    join(table, client, "b", "c", "d")
+    blob = b"z" * (256 * 1024)
+    cid = hashlib.sha256(blob).hexdigest()
+    fetched = []
+
+    async def get_chunk(peer, chunk_id):
+        fetched.append((peer.node_id, chunk_id))
+        return blob
+    client.get_chunk = get_chunk
+    client.inventories["d"] = [cid]
+
+    class Store:
+        def list_ids(self):
+            return []
+
+    for n in "bcd":
+        table.get(n).rtt_ewma = 0.001
+    for n in ("me", "b", "c"):
+        table.get(n).bw_ewma = 10e6
+    table.get("d").bw_ewma = 0.5e6
+    table.update_tiers()
+    clock.t += config.SLOW_HOLD_S
+    table.update_tiers()
+    assert table.get("d").tier == 2
+
+    locs = LocationMap()
+    for _ in range(12):                       # each round fetches one chunk from d; it is fast now
+        asyncio.run(inventory_once(locs, table, client, Store()))
+    assert fetched and all(n == "d" for n, _ in fetched)
+    assert table.get("d").bw_ewma > 1e6
+    table.update_tiers()
+    clock.t += config.SLOW_HOLD_S
+    table.update_tiers()
+    assert table.get("d").tier == 1
+
+
+def test_mdns_record_filtering():
+    from node.discovery import candidate_from_service, cluster_tag
+
+    tag = cluster_tag(b"cluster-key-for-tests")
+    assert tag != cluster_tag(b"another-cluster-key!")
+    ok = {b"node_id": b"b", b"tag": tag.encode()}
+    assert candidate_from_service(ok, ["192.168.1.5"], 8000, tag, "me") == "192.168.1.5:8000"
+    assert candidate_from_service({b"node_id": b"b", b"tag": b"other"}, ["1.2.3.4"], 8000, tag, "me") is None
+    assert candidate_from_service({b"node_id": b"me", b"tag": tag.encode()}, ["1.2.3.4"], 8000, tag, "me") is None
+    assert candidate_from_service(ok, [], 8000, tag, "me") is None

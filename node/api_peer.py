@@ -1,8 +1,9 @@
 """Peer HTTP API (docs/TEAM_WORKFLOW.md, "HTTP API contract").
 
-Every route needs a valid cluster HMAC. Request bodies are capped while they
-stream in, so an oversized upload is rejected before it is fully read.
-There is no DELETE route.
+Every route needs a valid cluster HMAC, and every answer to an authenticated
+request is signed back (X-Node, X-Resp-Sig), so a stranger on the Wi-Fi can't
+pose as a node. Request bodies are capped while they stream in, so an oversized
+upload is rejected before it is fully read. There is no DELETE route.
 """
 from __future__ import annotations
 
@@ -34,6 +35,39 @@ class Caller:
     body: bytes
 
 
+class SignResponses:
+    """ASGI middleware: sign the response to every request that passed auth.verify."""
+
+    def __init__(self, app, key: bytes, node_id: str):
+        self.app, self.key, self.node_id = app, key, node_id
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        start: dict = {}
+        parts: list[bytes] = []
+
+        async def capture(message):
+            if message["type"] == "http.response.start":
+                start.update(message)
+            elif message["type"] == "http.response.body":
+                parts.append(message.get("body", b""))
+                if message.get("more_body"):
+                    return
+                body = b"".join(parts)
+                headers = list(start.get("headers", []))
+                request_sig = scope.get("state", {}).get("verified_sig")
+                if request_sig:
+                    sig = auth.sign_response(self.key, start["status"], request_sig, self.node_id, body)
+                    headers += [(b"x-node", self.node_id.encode()), (b"x-resp-sig", sig.encode())]
+                await send({**start, "headers": headers})
+                await send({"type": "http.response.body", "body": body})
+            else:
+                await send(message)
+
+        await self.app(scope, receive, capture)
+
+
 async def read_capped(request: Request, limit: int) -> bytes:
     declared = request.headers.get("content-length")
     if declared is not None:
@@ -60,6 +94,7 @@ def create_peer_app(
     lifespan=None,
 ) -> FastAPI:
     app = FastAPI(title=f"peer {settings.node_id}", lifespan=lifespan)
+    app.add_middleware(SignResponses, key=settings.cluster_key, node_id=settings.node_id)
     started = time.monotonic()
 
     def authed(limit: int):
@@ -70,6 +105,7 @@ def create_peer_app(
                                       request.headers, body)
             except auth.AuthError as e:
                 raise HTTPException(401, str(e)) from None
+            request.state.verified_sig = request.headers["x-sig"]
             # A node that only knows us (e.g. we are its seed) announces its address.
             # X-Addr is not signed, so it is only a candidate until a heartbeat confirms it.
             addr = request.headers.get("x-addr", "")

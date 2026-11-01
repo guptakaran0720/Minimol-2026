@@ -57,6 +57,7 @@ class Settings:
     quota_bytes: int = 2 * 1024**3
     weight: float = 1.0
     simulated_delay_ms: int = 0
+    mdns: bool = True
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Settings:
@@ -81,6 +82,7 @@ class Settings:
             quota_bytes=int(float(env.get("QUOTA_MB", "2048")) * 1024 * 1024),
             weight=weight,
             simulated_delay_ms=int(env.get("SIMULATED_DELAY_MS", "0")),
+            mdns=env.get("MDNS", "1") not in ("0", "false", "no", ""),
         )
 
 

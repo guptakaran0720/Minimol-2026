@@ -156,3 +156,47 @@ def test_unknown_caller_address_becomes_candidate(tmp_path):
     client.advertise_addr = "bad addr; rm -rf"
     run(client.health(peer.addr))
     assert table.candidates() == ["10.0.0.7:8000"]
+
+
+def test_unsigned_or_impostor_responses_rejected(tmp_path):
+    """A stranger answering /health without the cluster key can't join the peer table."""
+    from fastapi import FastAPI
+
+    from node.auth import AuthError
+
+    impostor = FastAPI()
+
+    @impostor.get("/health")
+    def h():
+        return {"node_id": "evil", "host_id": "evil", "free_bytes": 10**12}
+
+    c = HttpPeerClient("node-b", KEY, httpx.AsyncClient(transport=httpx.ASGITransport(app=impostor)))
+    with pytest.raises(AuthError):
+        run(c.health("evil:8000"))
+
+    _, _, client, peer = make(tmp_path)
+    wrong = Peer(node_id="node-z", host_id="host-a", addr=peer.addr)   # node-a answers, not node-z
+    with pytest.raises(AuthError):
+        run(client.head_chunk(wrong, cid(b"x")))
+
+
+def test_replayed_response_rejected(tmp_path):
+    """An old signed answer (e.g. 'HEAD 200, I have it') can't be replayed for a new request."""
+    from node.auth import AuthError
+
+    store, _, client, peer = make(tmp_path)
+    blob = b"held"
+    run(client.put_chunk(peer, cid(blob), blob))
+    old = run(raw(client, "HEAD", f"/chunks/{cid(blob)}"))
+    assert old.status_code == 200 and old.headers["x-resp-sig"]
+
+    class Replay(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            return httpx.Response(200, headers={"x-node": old.headers["x-node"],
+                                                "x-resp-sig": old.headers["x-resp-sig"]})
+
+    import time
+    time.sleep(1.01)    # a new second -> a new request signature
+    c = HttpPeerClient("node-b", KEY, httpx.AsyncClient(transport=Replay()))
+    with pytest.raises(AuthError):
+        run(c.head_chunk(peer, cid(blob)))

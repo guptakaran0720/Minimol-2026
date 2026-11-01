@@ -1,6 +1,6 @@
 import pytest
 
-from node.auth import AuthError, sign_headers, verify
+from node.auth import AuthError, sign_headers, sign_response, verify, verify_response
 
 KEY = b"cluster-key-for-tests"
 
@@ -47,3 +47,15 @@ def test_missing_headers_rejected():
         verify(KEY, "GET", "/health", {}, b"", now=1000)
     with pytest.raises(AuthError):
         verify(KEY, "GET", "/health", {"X-Node": "a", "X-Ts": "nope", "X-Sig": "00"}, b"", now=1000)
+
+
+def test_response_signature():
+    req_sig = sign_headers(KEY, "node-a", "GET", "/health", now=1000)["X-Sig"]
+    sig = sign_response(KEY, 200, req_sig, "node-b", b"{}")
+    headers = {"X-Node": "node-b", "X-Resp-Sig": sig}
+    assert verify_response(KEY, 200, req_sig, headers, b"{}") == "node-b"
+    for status, rsig, body in [(404, req_sig, b"{}"), (200, "other-request", b"{}"), (200, req_sig, b"[]")]:
+        with pytest.raises(AuthError):
+            verify_response(KEY, status, rsig, headers, body)
+    with pytest.raises(AuthError):
+        verify_response(KEY, 200, req_sig, {}, b"{}")

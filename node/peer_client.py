@@ -1,8 +1,10 @@
 """HTTP client for the peer API. Implements contracts.PeerClient.
 
-Every call is HMAC-signed. Connect timeout 1 s, read timeout 5 s. Network
-errors and unexpected status codes raise; callers treat any exception as a
-failed transfer. Expected "no" answers (404, rejected PUT) return None/False.
+Every call is HMAC-signed, and every response must carry a valid response
+signature from the node we meant to reach (auth.verify_response). Connect
+timeout 1 s, read timeout 5 s. Network errors, bad signatures and unexpected
+status codes raise; callers treat any exception as a failed transfer.
+Expected "no" answers (404, rejected PUT) return None/False.
 """
 from __future__ import annotations
 
@@ -25,14 +27,22 @@ class HttpPeerClient:
             limits=httpx.Limits(max_connections=64, max_keepalive_connections=16),
         )
 
-    async def _request(self, addr: str, method: str, path: str, body: bytes = b"",
+    async def _request(self, target: Peer | str, method: str, path: str, body: bytes = b"",
                        content_type: str | None = None) -> httpx.Response:
+        """target is a Peer (its node_id must sign the answer) or a bare addr (any member may)."""
+        addr, expect = (target.addr, target.node_id) if isinstance(target, Peer) else (target, None)
         headers = auth.sign_headers(self.key, self.node_id, method, path, body)
         if self.advertise_addr:
             headers["X-Addr"] = self.advertise_addr
         if content_type:
             headers["Content-Type"] = content_type
-        return await self.http.request(method, f"http://{addr}{path}", content=body, headers=headers)
+        r = await self.http.request(method, f"http://{addr}{path}", content=body, headers=headers)
+        if r.status_code == 401:               # it rejected our signature; 401s are never signed
+            raise self._unexpected(r)
+        responder = auth.verify_response(self.key, r.status_code, headers["X-Sig"], r.headers, r.content)
+        if expect is not None and responder != expect:
+            raise auth.AuthError(f"{addr} answered as {responder}, expected {expect}")
+        return r
 
     @staticmethod
     def _unexpected(r: httpx.Response) -> httpx.HTTPStatusError:
@@ -42,7 +52,7 @@ class HttpPeerClient:
     # ---- contracts.PeerClient ----
 
     async def put_chunk(self, peer: Peer, chunk_id: str, blob: bytes) -> bool:
-        r = await self._request(peer.addr, "PUT", f"/chunks/{chunk_id}", blob, "application/octet-stream")
+        r = await self._request(peer, "PUT", f"/chunks/{chunk_id}", blob, "application/octet-stream")
         if r.status_code in (200, 201):
             return True
         if r.status_code in (400, 413, 507):   # hash mismatch, too big, quota full
@@ -50,7 +60,7 @@ class HttpPeerClient:
         raise self._unexpected(r)
 
     async def get_chunk(self, peer: Peer, chunk_id: str) -> bytes | None:
-        r = await self._request(peer.addr, "GET", f"/chunks/{chunk_id}")
+        r = await self._request(peer, "GET", f"/chunks/{chunk_id}")
         if r.status_code == 200:
             return r.content
         if r.status_code == 404:
@@ -58,20 +68,20 @@ class HttpPeerClient:
         raise self._unexpected(r)
 
     async def head_chunk(self, peer: Peer, chunk_id: str) -> bool:
-        r = await self._request(peer.addr, "HEAD", f"/chunks/{chunk_id}")
+        r = await self._request(peer, "HEAD", f"/chunks/{chunk_id}")
         if r.status_code in (200, 404):
             return r.status_code == 200
         raise self._unexpected(r)
 
     async def get_inventory(self, peer: Peer) -> list[str]:
-        r = await self._request(peer.addr, "GET", "/inventory")
+        r = await self._request(peer, "GET", "/inventory")
         if r.status_code != 200:
             raise self._unexpected(r)
         return r.json()
 
     async def put_index(self, peer: Peer, owner_pub_hex: str, record: dict) -> bool:
         body = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        r = await self._request(peer.addr, "PUT", f"/index/{owner_pub_hex}", body, "application/json")
+        r = await self._request(peer, "PUT", f"/index/{owner_pub_hex}", body, "application/json")
         if r.status_code == 201:
             return True
         if r.status_code == 409:               # peer already has this version or newer
@@ -79,7 +89,7 @@ class HttpPeerClient:
         raise self._unexpected(r)
 
     async def get_index(self, peer: Peer, owner_pub_hex: str) -> dict | None:
-        r = await self._request(peer.addr, "GET", f"/index/{owner_pub_hex}")
+        r = await self._request(peer, "GET", f"/index/{owner_pub_hex}")
         if r.status_code == 200:
             return r.json()
         if r.status_code == 404:
@@ -92,10 +102,13 @@ class HttpPeerClient:
         r = await self._request(addr, "GET", "/health")
         if r.status_code != 200:
             raise self._unexpected(r)
-        return r.json()
+        health = r.json()
+        if health.get("node_id") != r.headers["x-node"]:
+            raise auth.AuthError("/health body names a different node than its signature")
+        return health
 
     async def get_peers(self, peer: Peer) -> list[dict]:
-        r = await self._request(peer.addr, "GET", "/peers")
+        r = await self._request(peer, "GET", "/peers")
         if r.status_code != 200:
             raise self._unexpected(r)
         return r.json()
