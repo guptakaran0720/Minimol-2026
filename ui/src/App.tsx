@@ -5,6 +5,7 @@ import { ChunkMapView } from "./components/ChunkMapView";
 import { Files } from "./components/Files";
 import { Peers } from "./components/Peers";
 import { Repair } from "./components/Repair";
+import { Timeline } from "./components/Timeline";
 import { Unlock } from "./components/Unlock";
 import { Upload } from "./components/Upload";
 
@@ -12,6 +13,7 @@ const POLL_MS = 2000;
 
 export default function App() {
   const stats = usePoll(api.stats, POLL_MS);
+  const timeline = usePoll(api.events, POLL_MS);
   const unlocked = stats.data?.unlocked ?? false;
   const files = usePoll(api.files, POLL_MS, unlocked ? "files" : null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -103,6 +105,7 @@ export default function App() {
           {unlocked && (
             <ChunkMapView map={map.data} file={(files.data ?? []).find((f) => f.file_uuid === selected)} peers={peers} />
           )}
+          <Timeline data={timeline.data} />
           {s && <Repair repair={s.repair} />}
         </div>
       </main>

@@ -36,6 +36,26 @@ export interface Stats {
   };
 }
 
+export interface ClusterEvent {
+  t: number;
+  seq?: number;
+  kind: string;
+  source: "node" | "repair";
+  node?: string;
+  chunk?: string;
+  to?: string;
+  addr?: string;
+  reason?: string;
+  previous?: string;
+  chunks?: number;
+}
+
+export interface Timeline {
+  node_id: string;
+  events: ClusterEvent[];
+  scrub: { checked: number; quarantined: number; missing: number; passes: number; last_pass_at: number | null };
+}
+
 export type FileStatus = "healthy" | "degraded" | "unavailable";
 
 export interface FileEntry {
@@ -101,6 +121,7 @@ export const api = {
   stats: () => call<Stats>("/stats"),
   files: () => call<FileEntry[]>("/files"),
   map: (uuid: string) => call<ChunkMap>(`/files/${uuid}/map`),
+  events: () => call<Timeline>("/events"),
   recover: (username: string, passphrase: string) =>
     call<{ username: string; files_restored: number; files_unavailable: number; files: FileEntry[] }>("/recover", {
       method: "POST",

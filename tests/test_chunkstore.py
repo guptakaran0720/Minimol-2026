@@ -68,3 +68,39 @@ def test_index_store_keeps_highest_version(tmp_path):
     assert IndexStore(tmp_path).get(owner) == {"v": 3}
     with pytest.raises(ValueError):
         idx.get("../x")
+
+
+def test_scrub_quarantines_corrupt_chunk_and_accepts_a_good_copy_again(tmp_path):
+    s = DiskChunkStore(tmp_path, quota_bytes=10_000)
+    good, bad = b"good chunk", b"soon corrupt"
+    s.put(cid(good), good)
+    s.put(cid(bad), bad)
+    path = tmp_path / "chunks" / cid(bad)[:2] / cid(bad)
+    path.write_bytes(b"soon c0rrupt")                     # disk rot / tampering
+    result = s.scrub_some(10)
+    assert result.checked == 2 and result.quarantined == [cid(bad)] and result.pass_completed
+    assert not s.has(cid(bad)) and s.list_ids() == [cid(good)]
+    assert s.used_bytes() == len(good)
+    assert [f.name.split(".")[0] for f in (tmp_path / "quarantine").iterdir()] == [cid(bad)]
+    assert s.put(cid(bad), bad) is True                   # repair can bring a good copy back
+    assert s.get(cid(bad)) == bad
+    assert s.scrub_stats["quarantined"] == 1 and s.scrub_stats["passes"] == 1
+
+
+def test_scrub_walks_the_store_a_few_chunks_at_a_time(tmp_path):
+    s = DiskChunkStore(tmp_path, quota_bytes=10_000)
+    blobs = [bytes([i]) * 10 for i in range(5)]
+    for b in blobs:
+        s.put(cid(b), b)
+    seen = [s.scrub_some(2) for _ in range(3)]
+    assert [r.checked for r in seen] == [2, 2, 1]
+    assert [r.pass_completed for r in seen] == [False, False, True]
+    assert s.scrub_some(2).checked == 2                  # wraps round for the next pass
+
+
+def test_scrub_notices_a_deleted_file(tmp_path):
+    s = DiskChunkStore(tmp_path, quota_bytes=10_000)
+    s.put(cid(b"x"), b"x")
+    (tmp_path / "chunks" / cid(b"x")[:2] / cid(b"x")).unlink()
+    r = s.scrub_some(5)
+    assert r.missing == [cid(b"x")] and s.list_ids() == [] and s.used_bytes() == 0
