@@ -13,7 +13,14 @@ export function Unlock({ onDone }: { onDone: (msg: string) => void }) {
     setError(null);
     try {
       const r = await api.recover(username.trim(), passphrase);
-      onDone(`Unlocked as ${r.username}. Restored ${r.files_restored} file${r.files_restored === 1 ? "" : "s"} from peers.`);
+      const plural = (n: number) => `${n} file${n === 1 ? "" : "s"}`;
+      const parts = [`Unlocked as ${r.username}.`];
+      if (r.files_restored > 0) parts.push(`Restored ${plural(r.files_restored)} from peers.`);
+      if (r.files_unavailable > 0) parts.push(`${plural(r.files_unavailable)} not reachable yet; retrying every 15 s.`);
+      if (r.files_restored === 0 && r.files_unavailable === 0)
+        parts.push("No files found for this username and passphrase. If you expected some, check both for a typo.");
+      parts.push("New files from other laptops appear here within 15 s.");
+      onDone(parts.join(" "));
       setPassphrase("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

@@ -16,6 +16,7 @@ encrypt or compress, and /stats says so.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 import os
@@ -38,6 +39,7 @@ from node.transfer import ChunkUnavailable, IntegrityError, NotEnoughPeers, Tran
 log = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 256 * 1024 * 1024
+SYNC_INTERVAL_S = 15.0
 MIN_PASSPHRASE_LEN = 12
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
@@ -85,6 +87,8 @@ class UserState:
     self_id: str | None = None
     transfer: Transfer | None = None
     username: str | None = None
+    sync_interval: float | None = None      # set by from_node; None = no background sync (tests)
+    sync_task: asyncio.Task | None = None
 
     @classmethod
     def from_node(cls, node) -> UserState:
@@ -94,8 +98,19 @@ class UserState:
             log.warning("user API is up but locked: %s", label)
         return cls(codec=codec, peers=node.peers, client=node.client, locations=node.locations,
                    data_dir=Path(node.settings.data_dir) / "user", codec_label=label,
-                   self_id=node.settings.node_id,
+                   self_id=node.settings.node_id, sync_interval=SYNC_INTERVAL_S,
                    allowed_networks=list(getattr(node.settings, "user_api_allow", []) or []))
+
+
+async def sync_forever(transfer: Transfer, interval: float) -> None:
+    """Keep the catalog in step with the owner's file list on the peers, so a file uploaded
+    from another laptop shows up here, and a manifest that was unreachable at unlock is retried."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await transfer.recover()
+        except Exception:
+            log.exception("file-list sync failed; retrying in %.0f s", interval)
 
 
 class RecoverBody(BaseModel):
@@ -140,6 +155,10 @@ def create_router(source) -> APIRouter:
         )
         restored = await transfer.recover()
         s.transfer, s.username = transfer, username
+        if s.sync_task:
+            s.sync_task.cancel()
+        if s.sync_interval:
+            s.sync_task = asyncio.create_task(sync_forever(transfer, s.sync_interval))
         return {"username": username, "files_restored": restored,
                 "files_unavailable": len(transfer.unrecovered), "files": transfer.list_files()}
 

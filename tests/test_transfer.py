@@ -348,7 +348,68 @@ def test_upload_reports_how_many_peers_took_the_index():
     up(t, b"x" * 3000, "a")
     assert t.last_index_acks == 4
     owner = t.keys.sign_pub.hex()
-    for slot in net.indexes.values():           # another device already published a newer list
+    for slot in net.indexes.values():           # another device publishes a newer list mid-upload
         slot[owner] = {"version": 10**6, "ids": [], "sig": owner}
+
+    async def no_sync():                        # the race: our pre-upload sync ran just before that
+        return 0
+    t.recover = no_sync
     up(t, b"y" * 3000, "b")
     assert t.last_index_acks == 0
+
+
+
+def two_laptops():
+    net, table, client, locs, codec, t1 = setup()
+    t2 = Transfer(keys_for(codec), codec, table, client, locs, chunk_size=CHUNK)
+    return net, codec, t1, t2
+
+
+def test_second_laptop_sees_a_new_file_after_sync():
+    net, codec, t1, t2 = two_laptops()
+    assert run(t2.recover()) == 0                # unlocked before anything was uploaded
+    data = os.urandom(CHUNK * 3)
+    res = up(t1, data, "notes.pdf")
+    assert res.file_uuid not in t2.catalog
+    assert run(t2.recover()) == 1                # what the 15 s sync loop does
+    assert down(t2, res.file_uuid) == data
+
+
+def test_sync_only_fetches_manifests_it_does_not_have():
+    net, codec, t1, t2 = two_laptops()
+    up(t1, b"a" * 3000, "a")
+    up(t1, b"b" * 3000, "b")
+    run(t2.recover())
+    calls = []
+    original = t2._load_manifest
+
+    async def counting(mid, *args):
+        calls.append(mid)
+        return await original(mid, *args)
+
+    t2._load_manifest = counting
+    up(t1, b"c" * 3000, "c")
+    assert run(t2.recover()) == 3
+    assert len(calls) == 1
+
+
+def test_upload_keeps_files_from_other_laptops_in_the_index():
+    net, codec, t1, t2 = two_laptops()
+    run(t2.recover())
+    up(t1, b"from laptop 1" * 300, "one")
+    up(t2, b"from laptop 2" * 300, "two")       # t2 never synced in between
+    fresh = Transfer(keys_for(codec), codec, *two_laptops_parts(t1))
+    assert run(fresh.recover()) == 2
+
+
+def two_laptops_parts(t):
+    return t.peers, t.client, t.locations
+
+
+def test_reupload_from_another_laptop_reuses_the_file_and_key():
+    net, codec, t1, t2 = two_laptops()
+    data = os.urandom(CHUNK * 4)
+    first = up(t1, data, "log.csv")
+    second = up(t2, data + b"tail", "log.csv")   # t2 syncs before uploading
+    assert second.file_uuid == first.file_uuid and second.version == 2
+    assert second.reused_chunks == 4
