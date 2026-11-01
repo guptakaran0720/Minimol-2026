@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, type UploadResult } from "./api";
+import { api, type FileEntry, type UploadResult } from "./api";
 import { usePoll } from "./usePoll";
 import { useClusterFeed } from "./feed";
 import { peerLooks } from "./identity";
 import { ChunkMapView } from "./components/ChunkMapView";
 import { Files } from "./components/Files";
 import { Peers } from "./components/Peers";
+import { Preview } from "./components/Preview";
 import { Repair } from "./components/Repair";
 import { Timeline } from "./components/Timeline";
 import { Ticker, type TickerLine } from "./components/Ticker";
@@ -25,6 +26,41 @@ export default function App() {
   const map = usePoll(loadMap, POLL_MS, unlocked ? selected : null);
   const [notice, setNotice] = useState<string | null>(null);
   const [lastUpload, setLastUpload] = useState<UploadResult | null>(null);
+  const [previewing, setPreviewing] = useState<FileEntry | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function logout() {
+    setBusy(true);
+    try {
+      await api.logout();
+      setSelected(null);
+      setLastUpload(null);
+      setPreviewing(null);
+      setNotice("Logged out. Your keys are gone from this laptop; your files stay safe on the peers. Unlock again to see them.");
+    } catch (e) {
+      setNotice(`Log out failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+      stats.refresh();
+    }
+  }
+
+  async function remove(f: FileEntry) {
+    if (!window.confirm(`Delete "${f.name}" from every laptop? Its chunks are erased from the peers and this can't be undone.`)) return;
+    try {
+      const r = await api.deleteFile(f.file_uuid);
+      setNotice(
+        `Deleted ${r.name}: ${r.copies_deleted} stored cop${r.copies_deleted === 1 ? "y" : "ies"} erased from the peers.` +
+          (r.pending_objects ? ` ${r.pending_objects} piece${r.pending_objects === 1 ? "" : "s"} sit on an offline laptop and will be erased when it returns.` : ""),
+      );
+      if (selected === f.file_uuid) setSelected(null);
+    } catch (e) {
+      setNotice(`Delete failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      files.refresh();
+      stats.refresh();
+    }
+  }
 
   // Keep a file selected so the chunk map is always showing something useful.
   useEffect(() => {
@@ -80,6 +116,11 @@ export default function App() {
               {unlocked ? `unlocked · ${s.username}` : "locked"}
             </span>
           )}
+          {s && unlocked && (
+            <button type="button" className="btn btn-quiet" onClick={logout} disabled={busy}>
+              Log out
+            </button>
+          )}
         </div>
       </header>
 
@@ -133,7 +174,14 @@ export default function App() {
           <HealthTile stats={s} unlocked={unlocked} />
           <LinkTile peers={peers} looks={looks} />
           <RepairTile repair={s.repair} />
-          <Files files={files.data ?? []} unlocked={unlocked} selected={selected} onSelect={setSelected} />
+          <Files
+            files={files.data ?? []}
+            unlocked={unlocked}
+            selected={selected}
+            onSelect={setSelected}
+            onPreview={setPreviewing}
+            onDelete={remove}
+          />
           <RecoveryTile username={unlocked ? s.username : null} codec={s.codec} />
           {unlocked && (
             <ChunkMapView map={map.data} file={(files.data ?? []).find((f) => f.file_uuid === selected)} peers={peers} looks={looks} />
@@ -145,6 +193,7 @@ export default function App() {
       ) : (
         !stats.error && <p className="loading">Connecting to this node…</p>
       )}
+      {previewing && unlocked && <Preview file={previewing} onClose={() => setPreviewing(null)} />}
     </div>
   );
 }

@@ -85,13 +85,26 @@ class QuotaExceeded(Exception):
     pass
 
 
+class ChunkDeleted(Exception):
+    """The owner deleted this chunk. Peers keep a tombstone with the revealed delete
+    token, so a holder that was offline at the time can check it and drop its copy."""
+
+    def __init__(self, chunk_id: str, token: str):
+        super().__init__(chunk_id)
+        self.chunk_id, self.token = chunk_id, token
+
+
 class ChunkStore(Protocol):
-    def put(self, chunk_id: str, blob: bytes) -> bool: ...   # True if new; raises HashMismatch, QuotaExceeded
+    def put(self, chunk_id: str, blob: bytes, delete_hash: str | None = None) -> bool: ...
+        # True if new; raises HashMismatch, QuotaExceeded, ChunkDeleted (tombstoned id).
+        # delete_hash = sha256(delete token): only the owner, who can derive the token, may delete.
     def get(self, chunk_id: str) -> bytes | None: ...
     def has(self, chunk_id: str) -> bool: ...
     def list_ids(self) -> list[str]: ...
     def used_bytes(self) -> int: ...
     def free_bytes(self) -> int: ...   # quota - used_bytes; reported by /health
+    def delete_hash(self, chunk_id: str) -> str | None: ...   # travels with the chunk on repair copies
+    def delete(self, chunk_id: str, token: str) -> str: ...   # deleted | absent | forbidden | unprotected
 
 
 @dataclass
@@ -119,12 +132,15 @@ class PeerClient(Protocol):
     """Every call is HMAC-signed over method|path|node_id|ts|sha256(body).
     Connect timeout 1 s, read timeout 5 s.
     Network errors raise; callers treat any exception as a failed transfer."""
-    async def put_chunk(self, peer: Peer, chunk_id: str, blob: bytes) -> bool: ...
+    async def put_chunk(self, peer: Peer, chunk_id: str, blob: bytes, delete_hash: str | None = None) -> bool: ...
+        # raises ChunkDeleted if the peer holds a tombstone for chunk_id
     async def get_chunk(self, peer: Peer, chunk_id: str) -> bytes | None: ...
     async def head_chunk(self, peer: Peer, chunk_id: str) -> bool: ...
     async def get_inventory(self, peer: Peer) -> list[str]: ...
     async def put_index(self, peer: Peer, owner_pub_hex: str, record: dict) -> bool: ...
     async def get_index(self, peer: Peer, owner_pub_hex: str) -> dict | None: ...
+    async def delete_chunk(self, peer: Peer, chunk_id: str, token: str) -> str: ...
+        # deleted | absent | forbidden | unprotected
 
 
 class LocationMap(Protocol):

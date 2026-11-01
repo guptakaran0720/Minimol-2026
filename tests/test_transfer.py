@@ -413,3 +413,77 @@ def test_reupload_from_another_laptop_reuses_the_file_and_key():
     second = up(t2, data + b"tail", "log.csv")   # t2 syncs before uploading
     assert second.file_uuid == first.file_uuid and second.version == 2
     assert second.reused_chunks == 4
+
+
+def test_delete_removes_every_copy_and_the_file_list_entry():
+    net, table, client, locs, codec, t = setup()
+    res = up(t, os.urandom(CHUNK * 4), "secret.bin")
+    up(t, b"keep me" * 300, "keep.txt")
+    objects = [c["chunk_id"] for c in res.chunks] + [res.manifest_id]
+    out = run(t.delete_file(res.file_uuid))
+    assert out["objects"] == 5 and out["copies_deleted"] == 15 and out["pending_objects"] == 0
+    for store in net.stores.values():
+        assert not any(o in store for o in objects)
+    assert res.file_uuid not in t.catalog
+    fresh = Transfer(keys_for(codec), codec, table, client, locs, chunk_size=CHUNK)
+    assert run(fresh.recover()) == 1 and [e["name"] for e in fresh.catalog.values()] == ["keep.txt"]
+
+
+def test_only_the_owner_can_delete():
+    net, table, client, locs, codec, t = setup()
+    res = up(t, os.urandom(CHUNK), "mine.bin")
+    other = Transfer(keys_for(codec, user="someone-else"), codec, table, client, locs, chunk_size=CHUNK)
+    cid = res.chunks[0]["chunk_id"]
+    assert run(other._delete_everywhere(cid))[0] == 0          # their token doesn't match
+    assert sum(cid in s for s in net.stores.values()) == 3
+
+
+def test_delete_while_a_holder_is_offline_finishes_when_it_returns():
+    net, table, client, locs, codec, t = setup()
+    res = up(t, os.urandom(CHUNK * 2), "f")
+    away = res.chunks[0]["holders"][0]
+    table.kill(net, away)
+    out = run(t.delete_file(res.file_uuid))
+    assert out["pending_objects"] >= 1 and t.pending_deletes
+    net.down.discard(away)
+    table.get(away).state = "alive"
+    assert run(t.retry_pending_deletes()) == 0
+    assert not any(c["chunk_id"] in net.stores[away] for c in res.chunks)
+
+
+def test_returning_holder_drops_its_copy_via_tombstone_during_repair():
+    from node.repair import Repairer
+    from tests.fakes import FakeStore
+    net, table, client, locs, codec, t = setup()
+    res = up(t, os.urandom(CHUNK), "f")
+    cid = res.chunks[0]["chunk_id"]
+    away = res.chunks[0]["holders"][0]
+    table.kill(net, away)
+    run(t.delete_file(res.file_uuid))
+    t.pending_deletes.clear()                                 # owner gone: no retries from them
+    net.down.discard(away)
+    table.get(away).state = "alive"
+    locs.refresh()                                             # the others hold tombstones now
+    rep = Repairer(away, table.get(away).host_id, FakeStore(net, away), table, client, locs, takeover_rounds=0)
+    stats = run(rep.run_once())
+    assert stats["deleted"] >= 1 and cid not in net.stores[away]
+
+
+def test_other_laptop_drops_a_file_deleted_elsewhere():
+    net, codec, t1, t2 = two_laptops()
+    a = up(t1, b"aaa" * 1000, "a.txt")
+    up(t1, b"bbb" * 1000, "b.txt")
+    run(t2.recover())
+    assert a.file_uuid in t2.catalog
+    run(t1.delete_file(a.file_uuid))
+    run(t2.sync())
+    assert a.file_uuid not in t2.catalog and len(t2.catalog) == 1
+
+
+def test_fresh_laptop_can_delete_with_derived_tokens():
+    net, table, client, locs, codec, t = setup()
+    res = up(t, os.urandom(CHUNK * 2), "f")
+    fresh = Transfer(keys_for(codec), codec, table, client, locs, chunk_size=CHUNK)
+    run(fresh.recover())
+    out = run(fresh.delete_file(res.file_uuid))
+    assert out["copies_deleted"] == 9 and out["pending_objects"] == 0

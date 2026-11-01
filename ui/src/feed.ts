@@ -53,6 +53,8 @@ export function describeEvent(e: ClusterEvent): { tone: Tone; text: string } {
       return { tone: "green", text: `repair copied chunk ${chunk} → ${e.to}` };
     case "corrupt_local":
       return { tone: "red", text: `repair skipped a corrupt local copy of ${chunk}` };
+    case "deleted":
+      return { tone: "blue", text: `chunk ${chunk} was deleted by its owner · dropped the copy here` };
     default:
       return { tone: "blue", text: e.kind.replace(/_/g, " ") };
   }
