@@ -27,7 +27,7 @@
 | Kill a node: marked dead after | about 19.5–21.4 s |
 | Kill a node: back to 3 copies | 21.4 s in one run, 42.7 s in another ("about 20–40 s") |
 | Manual kill with 27 files stored | all 27 healed |
-| Test suite | `pytest`: 166 passed, 1 skipped (the skipped one is `tests/test_cluster.py`, which needs a running cluster) |
+| Test suite | `pytest`: 171 passed, 1 skipped (the skipped one is `tests/test_cluster.py`, which needs a running cluster) |
 | `tests/test_cluster.py` against live clusters | passed on the Docker cluster and on a local 4-process cluster |
 
 **Five golden rules**
@@ -527,7 +527,7 @@
 ## L. Testing and benchmarks
 
 **Q67. What's your strongest evidence that it's correct?** · *Owner: P3*
-- **Answer:** `tests/test_cluster.py` runs against a real cluster: upload, check 3 distinct hosts, kill a holder, download with matching SHA-256, wait for repair, recover on another node from passphrase, kill a second original holder, download again. It passed on the Docker cluster and on a local 4-process cluster, and the full suite is 166 passed, 1 skipped.
+- **Answer:** `tests/test_cluster.py` runs against a real cluster: upload, check 3 distinct hosts, kill a holder, download with matching SHA-256, wait for repair, recover on another node from passphrase, kill a second original holder, download again. It passed on the Docker cluster and on a local 4-process cluster, and the full suite is 171 passed, 1 skipped.
 - **Follow-up:** Tests you wrote yourselves.
 - **Response:** True. That's why every download also checks the whole-file SHA-256 at runtime, so a bug shows up as an error rather than silently wrong data.
 - **Show:** `test_upload_kill_download_repair_recover`; `pytest -q` output; `scripts/docker_e2e.sh`.
@@ -754,7 +754,7 @@
 - **Admit:** It's engineering, not research.
 
 **Q98. Isn't this a thin wrapper around zstd, AES and FastAPI?** · *Owner: P4*
-- **Answer:** The libraries do the math. The parts we wrote are the parts that break in real systems: failure detection with hysteresis, leader-elected repair that stays safe under disagreement, signed responses, rollback-resistant recovery, the bomb guard python-zstandard didn't give us, and the 166 tests that check all of it.
+- **Answer:** The libraries do the math. The parts we wrote are the parts that break in real systems: failure detection with hysteresis, leader-elected repair that stays safe under disagreement, signed responses, rollback-resistant recovery, the bomb guard python-zstandard didn't give us, and the 171 tests that check all of it.
 - **Follow-up:** Name one thing you had to figure out yourselves.
 - **Response:** python-zstandard ignores the output cap when the frame declares its size, so we check the declared size ourselves; there's a test for it.
 - **Show:** `test_decompression_bomb_rejected`; `test_racing_repairers_never_under_replicate`; `test_replayed_response_rejected`.

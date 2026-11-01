@@ -26,7 +26,8 @@ From a 4-node Docker cluster on one laptop, with real encryption and compression
 | Copies on the slow peer, smart vs random placement | **0%** vs 21.7% |
 | Re-upload after a 1% append to 20 MB | **0.19 MB** sent |
 | From a node dying to every chunk back at 3 copies | **about 20–40 s** |
-| Tests | 166 passed, plus a live 4-node cluster test |
+| Tests | 171 passed, plus a live 4-node cluster test |
+| On 3 real laptops (campus Wi-Fi) | Every self-test passed on all 3; a laptop's missing copies healed **6 s** after it rejoined; an empty replacement laptop was refilled in **~19 s** |
 
 ## Run it
 

@@ -94,25 +94,62 @@ So the honest figure is **about 20–40 s**.
 
 | Check | Result |
 |---|---|
-| `pytest` (Python 3.12 local, 3.11 in Docker) | 166 passed, 1 skipped (the live cluster test, which needs running nodes) |
+| `pytest` (Python 3.12 local, 3.11 in Docker) | 171 passed, 1 skipped (the live cluster test, which needs running nodes) |
 | `tests/test_cluster.py` on Docker and on local processes | passed: upload → distinct hosts → kill → download → dead → repair → recover on another node → second kill → download |
 | Fresh-node recovery from username + passphrase | passed (part of the cluster test) |
 
-## Run 3: real laptops on the hotspot (to do)
+## Run 3: three real laptops on campus Wi-Fi (2026-11-01)
 
-Fill this in only from `bench/results/live-*.md` on the demo laptops.
+**Setup:**
+- 3 laptops (`laptop-1`, `laptop-2`, `laptop-3`) on the campus network (10.10.x), each running one node with its own `HOST_ID`.
+- Real P1 encryption and compression. Round-trip times between laptops were **18–140 ms**.
+- Each laptop ran the same automated self-test, plus a coordinated kill-and-rejoin test from laptop 1.
+- **No slow-node A/B on this run** (it needs a deliberately delayed laptop). Those numbers stay from Run 1.
 
-| Measurement | Result |
+**What changes with 3 laptops:** every chunk lives on all 3. If one laptop stays down, there is no fourth laptop to repair onto, so files correctly show **degraded** until it returns. Repair is therefore shown two ways: a laptop **rejoining**, and an **empty replacement** laptop being refilled.
+
+### Self-test results (each laptop tested itself)
+
+| Test | Laptop 1 | Laptop 2 | Laptop 3 |
+|---|---|---|---|
+| Health, codec, host ID | PASS | PASS | PASS |
+| Connectivity to every live peer (401 = reachable) | PASS | PASS¹ | PASS |
+| Unlock: file list restored from peers | PASS (7) | PASS (6) | PASS (5) |
+| Compression, 4 MB CSV (encoded ÷ original) | PASS **0.3011** | PASS **0.3011** | PASS **0.3012** |
+| Every chunk on 3 distinct laptops | PASS | PASS | PASS |
+| Every file downloads with matching SHA-256 | PASS 8/8 | PASS 7/7 | PASS 6/6 |
+| Delta sync, ~1% append (sent ÷ new size) | PASS **0.85%** (1 of 5 chunks) | PASS 0.85% | PASS 0.85% |
+| Stored chunks contain no readable plaintext | PASS 0/94 | PASS 0/87 | PASS 0/80 |
+| One byte flipped in a stored chunk, file still correct | PASS | PASS | PASS |
+| Wrong passphrase shows no files | PASS | PASS | PASS |
+| Node with the wrong cluster key never joins | PASS | PASS | PASS |
+| File uploaded on another laptop appears here | PASS | — | PASS |
+| File list rebuilt from peers after deleting the local cache | — | — | PASS 6/6 |
+| Brand-new empty node recovers everything from username + passphrase | — | PASS 7/7 | — |
+| Unit tests | PASS 171 passed | — | — |
+
+¹ The only failure in laptop 2's report was a probe of an old, no-longer-used laptop-4 address. Both live peers answered 401.
+
+### Failure and repair (seen from laptop 1)
+
+| Event | Result |
 |---|---|
-| CSV ratio / stored ÷ original | — |
-| Upload / download 20 MB (s) | — |
-| Delta sent for ~1% append | — |
-| Slow-node share, smart vs random | — |
-| Download, ETA vs random holder | — |
-| Dead / back to 3 copies (s) | — |
+| Stop laptop 3's node | **suspect** at 14:45:26, **dead** at 14:45:35, about 20 s after its last successful heartbeat |
+| Download every file with laptop 3 down | **8 / 8** SHA-256 match |
+| Upload while laptop 3 was down | Stored with **2 copies** and reported **degraded**, never claiming 3 |
+| Restart laptop 3 | Alive at 14:46:10. Older files were healthy at once (laptop 3 still had their chunks). The file uploaded while it was away was **healthy 6 s later**, because laptop 2, the elected repair leader for those chunks, copied the missing pieces. |
+| Replace laptop 2 with an empty node (`DATA_DIR=data/fresh`) | All files went degraded, then laptop 1 made **13 repair copies** to the new node and all 7 files were **healthy within ~19 s** |
+| Two laptops down at once (earlier run) | Every file still downloaded with matching SHA-256 and was reported degraded |
+
+### Other observations
+
+- **Upload speed:** 4 MB in 0.67 s, 8 MB in 1.60 s, from laptop 1 over campus Wi-Fi.
+- **Download speed:** 0.01–0.06 s per file on laptop 1. That's fast because laptop 1 itself holds a copy of most chunks; it is not a network measurement.
+- **Wi-Fi blip:** laptops 2 and 3 once flickered to suspect for 2 s at the same moment (a Wi-Fi blip on laptop 1's side). Files showed degraded for those 2 s and recovered without any repair.
+- **File-list sync:** files uploaded on laptop 3 appeared on laptop 1 within the 15 s sync interval (v1 at 14:28:45, v2 at 14:29:16).
 
 ## What these numbers do not show
 
-- **Runs 1 and 2 are on one machine.** Throughput reflects a virtual network, not Wi-Fi.
+- **Runs 1 and 2 are on one machine.** Throughput reflects a virtual network, not Wi-Fi. Run 3 is real laptops, but only three, and without the slow-node A/B.
 - **The slow node is simulated** with a fixed 300 ms delay. Real slowness is noisier.
 - **Durability over days, disk failures and many simultaneous users were not tested.**
