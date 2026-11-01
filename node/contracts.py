@@ -146,6 +146,7 @@ class LocationMap(Protocol):
 # transfer.Transfer.download(file_uuid, dst: BinaryIO) -> Manifest
 #     writes plaintext chunks to dst, then raises if the whole-file SHA-256 mismatches
 # transfer.Transfer.recover() -> int   (number of files restored from peers)
+# repair.Repairer(self_id, self_host, store, peers, client, locations).run_forever()
 
 
 @dataclass

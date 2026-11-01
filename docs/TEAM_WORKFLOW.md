@@ -65,12 +65,12 @@ There is **no** DELETE route.
 
 | Method | Path |
 |---|---|
-| POST | `/files` |
+| POST | `/files?name=<name>` (raw file bytes as the body, ≤ 256 MiB, else 413) |
 | GET | `/files` |
-| GET | `/files/{uuid}` |
+| GET | `/files/{uuid}` (served only after the whole-file SHA-256 matches; header `X-File-SHA256`) |
 | GET | `/files/{uuid}/map` |
-| GET | `/stats` |
-| POST | `/recover` (body: `{username, passphrase}`) |
+| GET | `/stats` (works while locked; feeds the dashboard) |
+| POST | `/recover` (body: `{username, passphrase}`; unlocks the node and pulls the owner index. Every other route returns 401 until this succeeds) |
 
 ## How each builder works without waiting on the others
 
@@ -136,6 +136,12 @@ P4 writes one explanation doc within **45 minutes** of each module merging, in `
 
 P4 also owns:
 - **`RESULTS.md`:** benchmark table filled only from `bench.py` output, as the median of 5 runs plus min/max.
+  - Live run, on the uploader's laptop. Start the slow node with `SIMULATED_DELAY_MS=300` and say on stage that the delay is simulated:
+    ```bash
+    python -m bench.bench --target http://127.0.0.1:8001 --username <user> --passphrase '<pass>' --slow-node <slow node_id> --kill-node <node_id>
+    ```
+  - The script writes `bench/results/live-<time>.json` and `.md`. Paste the `.md` tables into `RESULTS.md`.
+  - `python -m bench.bench --sim` only checks the script. **Never** put simulated numbers in `RESULTS.md`.
 - **`DEMO_SCRIPT.md`:** the timed 5-minute script with a recovery plan for every step.
 - **`JUDGE_QA.md`:** at least 100 questions. P4 asks each builder 5 hard questions about their module at every merge and records the answers.
 - **`SLIDES.md`:**
