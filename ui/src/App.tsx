@@ -104,7 +104,7 @@ export default function App() {
       <header className="top">
         <div className="brand">
           <span className="wordmark">
-            minimol<span className="wordmark-dot">.</span>
+            chunky<span className="wordmark-dot">.</span>
           </span>
           {s?.node_id && (
             <span className="mono muted" title="The laptop serving this dashboard">
