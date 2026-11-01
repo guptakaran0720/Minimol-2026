@@ -4,7 +4,6 @@ import asyncio
 import httpx
 
 from node.config import Settings, mac_for_ip
-from node.contracts import Peer
 from node.main import create_app
 
 MAC = "aa:bb:cc:00:11:22"
@@ -56,13 +55,14 @@ def test_metrics_endpoint(tmp_path):
     node = app.state.node
     node.audit_stats["passed"] += 3
     node.client.bytes_sent["n2"] += 4096
+    node.events.add("audit_failed", node="n2", chunk="ab12", reason="wrong proof")   # labels named "kind"
     r = get(app, "/metrics")
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/plain")
     text = r.text
     for line in ('minimol_info{node_id="n1",host_id="h1",addr="10.0.0.1:8000",mac="aa:bb:cc:00:11:22"} 1',
                  'minimol_audits_total{outcome="passed"} 3', 'minimol_client_sent_bytes_total{peer="n2"} 4096',
                  'minimol_peer_state{peer="n1",state="alive"} 1', "minimol_store_chunks 0", "minimol_draining 0",
-                 "# TYPE minimol_scrub_checked_total counter"):
+                 "# TYPE minimol_scrub_checked_total counter", 'minimol_events_total{kind="audit_failed"} 1'):
         assert line in text, line
     assert get(app, "/metrics", host="10.0.0.9").status_code == 403
 

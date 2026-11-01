@@ -268,3 +268,13 @@ def test_owner_delete_over_the_wire(tmp_path):
         assert gone.value.token == token
         assert await client.delete_chunk(peer, cid(b"nope"), token) == "absent"
     run(go())
+
+
+def test_fresh_copy_on_a_distrusted_peer_clears_the_distrust(tmp_path):
+    store, _, client, peer = make(tmp_path)
+    blob = b"repair me"
+    cleared = []
+    client.on_fresh_copy = lambda c, n: cleared.append((c, n))
+    run(client.put_chunk(peer, cid(blob), blob))                  # 201: new copy
+    run(client.put_chunk(peer, cid(blob), blob))                  # 200: already had it, says nothing
+    assert cleared == [(cid(blob), "node-a")]

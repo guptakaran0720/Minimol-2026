@@ -98,7 +98,15 @@ class DiskChunkStore:
                 _atomic_write(self._delhash_dir / chunk_id, delete_hash.encode(), self._tmp)
                 self._delhash[chunk_id] = delete_hash
             if chunk_id in self._sizes:
-                return False
+                if self._intact(chunk_id):
+                    return False
+                # Our copy rotted (or was tampered with) and nobody noticed yet: take the good one.
+                path = self._path(chunk_id)
+                _atomic_write(path, blob, self._tmp)
+                self._used += len(blob) - self._sizes[chunk_id]
+                self._sizes[chunk_id] = len(blob)
+                self.scrub_stats["replaced"] = self.scrub_stats.get("replaced", 0) + 1
+                return True
             if self._used + len(blob) > self.quota_bytes:
                 raise QuotaExceeded(f"{self.free_bytes()} bytes free, need {len(blob)}")
             path = self._path(chunk_id)
@@ -107,6 +115,12 @@ class DiskChunkStore:
             self._sizes[chunk_id] = len(blob)
             self._used += len(blob)
             return True
+
+    def _intact(self, chunk_id: str) -> bool:
+        try:
+            return hashlib.sha256(self._path(chunk_id).read_bytes()).hexdigest() == chunk_id
+        except FileNotFoundError:
+            return False
 
     def get(self, chunk_id: str) -> bytes | None:
         if chunk_id not in self._sizes:

@@ -19,10 +19,10 @@ class _Out:
         self.lines: list[str] = []
         self.seen: set[str] = set()
 
-    def add(self, name: str, kind: str, help_: str, value, **labels) -> None:
+    def add(self, name: str, mtype: str, help_: str, value, **labels) -> None:
         if name not in self.seen:
             self.seen.add(name)
-            self.lines += [f"# HELP {name} {help_}", f"# TYPE {name} {kind}"]
+            self.lines += [f"# HELP {name} {help_}", f"# TYPE {name} {mtype}"]
         lab = ",".join(f'{k}="{_esc(v)}"' for k, v in labels.items())
         self.lines.append(f"{name}{{{lab}}} {value}" if lab else f"{name} {value}")
 

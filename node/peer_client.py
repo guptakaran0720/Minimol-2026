@@ -41,6 +41,8 @@ class HttpPeerClient:
         self.on_transfer: Callable[[str, Peer, str, int, float], None] | None = None
         # is_distrusted(chunk_id, node_id): True while that copy is under a failed audit
         self.is_distrusted: Callable[[str, str], bool] = lambda chunk_id, node_id: False
+        # on_fresh_copy(chunk_id, node_id): the peer wrote our bytes as a new or replaced copy (201)
+        self.on_fresh_copy: Callable[[str, str], None] = lambda chunk_id, node_id: None
 
     async def _request(self, target: Peer | str, method: str, path: str, body: bytes = b"",
                        content_type: str | None = None) -> httpx.Response:
@@ -84,6 +86,8 @@ class HttpPeerClient:
         r = await self._request(peer, "PUT", path, blob, "application/octet-stream")
         if r.status_code in (200, 201):
             self._moved("upload", peer, chunk_id, len(blob), started)
+            if r.status_code == 201:            # it wrote these verified bytes: a failed audit no longer applies
+                self.on_fresh_copy(chunk_id, peer.node_id)
             return True
         if r.status_code == 410:               # the owner deleted it; the body reveals the token
             raise ChunkDeleted(chunk_id, str(r.json().get("token", "")))

@@ -83,6 +83,7 @@ def build_node(settings: Settings) -> Node:
     node.client.on_transfer = lambda direction, peer, chunk_id, nbytes, seconds: node.transfers.add(
         direction, chunk_id, peer.node_id, peer.addr, peers.mac(peer.node_id), nbytes, seconds)
     node.client.is_distrusted = node.locations.distrusted
+    node.client.on_fresh_copy = node.locations.trust
     return node
 
 

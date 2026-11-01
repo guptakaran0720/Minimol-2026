@@ -9,8 +9,8 @@ Goal: three people build in parallel without touching each other's files. A four
 | Person | Role | Owns | Tests owned |
 |---|---|---|---|
 | **P1** | Crypto & data | `node/pipeline.py`, `node/keys.py`, `node/manifest.py`, `node/index.py`; after hour 4, with P3: the `ui/` dashboard | `tests/test_pipeline.py`, `tests/test_keys.py`, `tests/test_manifest.py`, `tests/test_index.py`, `tests/test_p1_flow.py` |
-| **P2** | Node & network | `node/config.py`, `node/auth.py`, `node/chunkstore.py`, `node/peer_client.py`, `node/api_peer.py`, `node/peers.py`, `node/inventory.py`, `node/discovery.py`, `node/scrub.py`, `node/events.py`, `node/main.py`, `scripts/run_cluster.sh`, `docs/TAILSCALE.md` | `tests/test_chunkstore.py`, `tests/test_auth.py`, `tests/test_peers.py`, `tests/test_api_peer.py`, `tests/test_scrub.py`, `tests/test_events.py` |
-| **P3** | Routing, transfer & repair | `node/routing.py`, `node/transfer.py`, `node/repair.py`, `node/api_user.py`, `bench/bench.py`, Docker (`Dockerfile`, `compose.yaml`, `scripts/docker_e2e.sh`, `docs/DOCKER.md`), `tests/fakes.py` | `tests/test_routing.py`, `tests/test_transfer.py`, `tests/test_repair.py`, `tests/test_api_user.py`, `tests/test_bench.py`, `tests/test_main_ui.py`, `tests/test_cluster.py` |
+| **P2** | Node & network | `node/config.py`, `node/auth.py`, `node/chunkstore.py`, `node/peer_client.py`, `node/api_peer.py`, `node/peers.py`, `node/inventory.py`, `node/discovery.py`, `node/scrub.py`, `node/events.py`, `node/audit.py`, `node/drain.py`, `node/metrics.py`, `node/main.py`, `scripts/run_cluster.sh`, `scripts/chaos.py`, `docs/TAILSCALE.md` | `tests/test_chunkstore.py`, `tests/test_auth.py`, `tests/test_peers.py`, `tests/test_api_peer.py`, `tests/test_scrub.py`, `tests/test_events.py`, `tests/test_audit.py`, `tests/test_drain.py`, `tests/test_node_routes.py` |
+| **P3** | Routing, transfer & repair | `node/routing.py`, `node/transfer.py`, `node/repair.py`, `node/api_user.py`, `bench/bench.py`, Docker (`Dockerfile`, `compose.yaml`, `scripts/docker_e2e.sh`, `docs/DOCKER.md`), `tests/fakes.py` | `tests/test_routing.py`, `tests/test_transfer.py`, `tests/test_repair.py`, `tests/test_api_user.py`, `tests/test_bench.py`, `tests/test_main_ui.py`, `tests/test_lock.py`, `tests/test_cluster.py` |
 | **P4** | Explanation & demo | `docs/explain/*`, `docs/DEMO_SCRIPT.md`, `docs/JUDGE_QA.md`, `docs/RESULTS.md`, `docs/SLIDES.md`, `README.md`, the pitch deck (`docs/deck/`, `docs/Minimol_Storage_Pitch.pptx`), charts (`docs/img/`) | Runs the full test suite and `bench.py` at every merge; owns the results table |
 
 What each builder's code does at run time, in one line:
@@ -62,6 +62,7 @@ Points everyone must match:
 | GET | `/chunks/{id}` | raw bytes, or 404 |
 | HEAD | `/chunks/{id}` | 200 or 404 |
 | GET | `/inventory` | `[chunk_id, ...]` |
+| POST | `/audit/{id}` (body `{nonce}`: 16–64 random bytes as hex) | `{proof}` = HMAC-SHA256(nonce, chunk bytes), or 404 if not held. Proof-of-storage challenge (`node/audit.py`) |
 | PUT | `/index/{owner_pub}` | 201; 409 if the version is not newer; 401 bad signature |
 | GET | `/index/{owner_pub}` | signed record, or 404 |
 
@@ -71,7 +72,7 @@ Deleting needs the owner's token, not just the cluster key (ARCHITECTURE_DECISIO
 
 | Method | Path |
 |---|---|
-| POST | `/files?name=<name>` (raw file bytes as the body, ≤ 256 MiB, else 413) |
+| POST | `/files?name=<name>[&lock=true\|false]` (raw file bytes as the body, ≤ 256 MiB, else 413). `lock=true` binds the file to this device's MAC: other devices get 403 on download, preview, replace and delete, even with the same login. Omitted keeps the previous version's setting |
 | GET | `/files` |
 | GET | `/files/{uuid}` (served only after the whole-file SHA-256 matches; header `X-File-SHA256`; `?inline=true` previews, serving anything that could run code as plain text inside a CSP sandbox) |
 | DELETE | `/files/{uuid}` (removes it from the file list and erases its chunks from every peer) |
@@ -79,6 +80,9 @@ Deleting needs the owner's token, not just the cluster key (ARCHITECTURE_DECISIO
 | GET | `/files/{uuid}/map` |
 | GET | `/stats` (works while locked; feeds the dashboard) |
 | GET | `/events` (P2, `node/main.py`: the cluster timeline. Peer joined, suspect, dead, back, slow tier, chunk quarantined, merged with P3's repair copies, newest first, plus scrub counters) |
+| GET | `/transfers?chunks=<id,id,…>` (P2: chunks this laptop uploaded to / downloaded from each peer, with the peer's IP and MAC; feeds each file's **Logs** button) |
+| GET, POST | `/drain` (P2: graceful leave. POST `{draining: true\|false}`; GET reports progress and `safe_to_power_off`) |
+| GET | `/metrics` (P2: Prometheus text: peer states and tiers, traffic per peer, audits, scrub, repair, store) |
 | POST | `/recover` (body: `{username, passphrase}`; unlocks the node and pulls the owner index. Every other route returns 401 until this succeeds) |
 
 ## How each builder works without waiting on the others

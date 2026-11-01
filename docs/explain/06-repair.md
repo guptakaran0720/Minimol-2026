@@ -59,7 +59,7 @@ We describe repair time as "about 20–40 s", because repair and inventory each 
 - A node only checks chunks **it holds**. If every holder of a chunk is gone, nobody can repair it; the file shows `unavailable`, never hidden.
 - With only 2 live hosts, 3 copies on distinct hosts is impossible; the chunk stays `degraded` until a third host appears.
 - No rebalancing onto newly joined nodes beyond normal repair.
-- Repair trusts `HEAD`. A peer that says "I have it" but has deleted the chunk would fool it until a download hits that peer. Storage audits are (planned).
+- Repair asks `HEAD` before copying. A copy that failed a proof-of-storage audit in the last 120 s doesn't count, whatever `HEAD` says, so a lying peer can't stop repair (`node/audit.py`, `HttpPeerClient.head_chunk`).
 - No priority for the most at-risk chunks (1 copy before 2 copies).
 
 ## Judge questions

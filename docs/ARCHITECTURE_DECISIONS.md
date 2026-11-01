@@ -141,6 +141,7 @@ How metadata is stored:
   - Heartbeat every 2 s.
   - **Suspect** after 2 missed heartbeats *or* the first failed transfer.
   - **Dead** after 20 s with no successful contact.
+  - **Draining** when a node announces a graceful leave (`POST /drain`): it serves reads but takes no new chunks, and peers' repair stops counting its copies, so they're copied elsewhere before it goes. `GET /drain` says when every chunk it holds is on the other live laptops ("safe to power off"). Measured on 4 local nodes: safe after about 20 s.
   - Connect timeout 1 s, so a closed laptop lid doesn't stall each chunk for 5 s.
 - **Verdict: KEEP, with these changes.** A `/health` reply is **not** proof that a peer still stores its chunks.
 
@@ -164,6 +165,7 @@ How metadata is stored:
   - If every holder is gone, the chunk shows as **unavailable**. It is never hidden.
   - Extra copies are not deleted (garbage collection is *planned*).
 - **Scrubbing finds rot before a reader does.** Every node re-hashes its own chunks in the background (`SCRUB_PER_S`, default 8 per second, so a full pass of 1,000 chunks takes about 2 minutes). A chunk that fails is moved to `quarantine/` and leaves the node's inventory, so peers count one copy fewer and the normal repair path copies a good one back. Measured on 4 local nodes: quarantined within 1 s of the flip, good copy restored in 16–20 s. Every step appears on the dashboard's cluster timeline (`GET /events`).
+- **Audits find lies.** Scrubbing only checks a node's own disk. Every 5 s each node also challenges another holder of a chunk it holds: a fresh random nonce, answered with HMAC-SHA256(nonce, chunk bytes), which needs the exact bytes. A failed audit distrusts that copy for 120 s: the location map leaves it out, and `HEAD` from that peer no longer counts, so repair puts a real copy elsewhere. A peer that accepts a good copy as new (201) is trusted again, and a store that receives a chunk whose local copy has rotted replaces it. Measured on 4 local nodes with the victim's own scrubbing off: caught in 7–17 s, a real third copy back 12–23 s after the corruption.
 - **Verdict: CHANGE.**
 
 ## 12. Security: cluster HMAC, quotas, owner-only delete
@@ -190,7 +192,7 @@ How metadata is stored:
 | Decompression bomb | `max_output_size = 1 MiB` per chunk | MVP |
 | Silent disk corruption (bit rot, a tampered file) | Background scrub re-hashes every stored chunk; failures are quarantined and repaired from another copy | MVP |
 | Index tampering or rollback | Ed25519 signature, take the highest version across holders | MVP (rollback only reduced) |
-| Peer claims to store data it deleted | HEAD before and after every repair copy; every download re-hashes; slow-tier peers get a GET-and-hash probe every 10 s; `POST /audit` challenge | Partial; general spot checks and audit *planned* |
+| Peer claims to store data it deleted | Every 5 s each node challenges another holder of a chunk it also holds with a fresh random nonce (`POST /audit/{id}`); the holder must return HMAC-SHA256(nonce, chunk bytes), which needs the exact bytes. A failed audit distrusts that copy for 120 s, so repair restores a real copy elsewhere (or replaces the rotten one in place); plus HEAD before and after every repair copy and a re-hash on every download | MVP (relay of challenges to an honest holder not stopped) |
 | Fake free-space claims | A copy counts only after the storing peer re-hashes it and sends a signed 201 (repair also re-checks with HEAD); a failed PUT marks the peer suspect, which keeps it out of placement until its next good heartbeat. Advertised free space itself is not verified | Partial |
 | Replay within 30 s | Only idempotent requests are affected | Acknowledged |
 | Sybil attack | Closed membership via the cluster key | MVP (not open-network safe) |
@@ -253,6 +255,15 @@ This is the same idea as our production delta OTA pipeline, which shipped a 21.6
   - **Old uploads:** chunks stored before this feature carry no delete hash and can't be deleted (`unprotected`).
   - **Malicious peers:** a malicious peer can always keep a copy of ciphertext. Delete removes data from honest peers; the encryption protects against the rest.
 - **Verdict: ADD.**
+
+## 16. Locked files: bound to the uploading device's MAC
+
+- **Pick:** at upload, the owner can tick "Lock to this laptop". The file's manifest records `lock_mac`, the MAC address of the interface holding the uploading node's IP. Every node then refuses to download, preview, replace or delete that file unless its own MAC matches, even for the same username and passphrase (user API 403; `Transfer.may_access`). The file still appears in the list on other devices, marked "locked to another device".
+- **Why the manifest:** it's encrypted under the owner's KEK and authenticated, so nobody without the passphrase can read or strip the lock. Unlocked manifests are byte-for-byte unchanged (the field is only written when set), so existing files keep working.
+- **Counter 1: a MAC address isn't a secret.** True. Anyone can read it on the LAN and many systems let you change your own, so a person with the passphrase *and* a spoofed MAC, or with a modified node that skips the check, can still get the file. **The lock is an access policy that honest nodes enforce, not encryption.** Its job is to keep a file to one laptop among teammates who share a login, not to stop a determined attacker who already has the passphrase.
+- **Counter 2: why not encrypt to the device instead?** A per-device key (generated on the laptop, never leaving it) would make the lock cryptographic, but then losing that laptop loses the file, which contradicts the "recover everything from the passphrase" promise in §5. A device key plus an owner-held recovery key is the planned upgrade.
+- **Counter 3: macOS rotates MAC addresses.** Its "Private Wi-Fi Address" can differ per network, so a file locked on one network can look like it belongs to another device elsewhere. Fixes: set the network's private address to *Fixed* or *Off*, or set `MAC_ADDR` explicitly on the node. The owner can unlock a file by re-uploading it with the lock off from the original device.
+- **Verdict: ADD as a policy feature, and say what it is.** Locking needs a detectable MAC: on `127.0.0.1` (local test clusters) there is none, and locking is refused unless `MAC_ADDR` is set.
 
 ## Counter to the whole idea: "Isn't this just a smaller Tahoe-LAFS?"
 

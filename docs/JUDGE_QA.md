@@ -483,11 +483,11 @@
 ## K. Security and malicious peers
 
 **Q61. How do you know a peer really stores a chunk?** · *Owner: P2*
-- **Answer:** Today: a successful PUT returns a signed response from that exact node, repair HEADs again after copying, and every download re-hashes what comes back. We don't have a cryptographic proof-of-storage challenge yet; a `POST /audit` challenge is (planned).
+- **Answer:** We challenge it. Every 5 s each node challenges another holder of a chunk it also holds with a fresh random nonce (`POST /audit/{id}`); the holder must return HMAC-SHA256(nonce, chunk bytes), which needs the exact bytes. A failed audit distrusts that copy for 120 s, so repair restores a real copy elsewhere (or replaces the rotten one in place). Every PUT and HEAD answer is also signed by that exact node, and every download re-hashes.
 - **Follow-up:** So a peer could delete chunks and keep listing them?
-- **Response:** Yes, until someone reads that chunk. Then the download falls back to another holder.
-- **Show:** `test_unsigned_or_impostor_responses_rejected`; `node/repair.py` HEAD-PUT-HEAD; AD §12 threat table.
-- **Admit:** A lying peer can quietly reduce a chunk to 2 real copies. Random spot checks are listed as MVP in AD §12, but the code only spot-checks slow-tier peers.
+- **Response:** Not for long: within a few audit rounds another holder challenges it, the proof fails, the copy is distrusted, and repair puts a real copy elsewhere. Measured on 4 local nodes: a corrupted copy was caught in 7–17 s and replaced 12–23 s after the corruption.
+- **Show:** `tests/test_audit.py`; `test_audit_route_proves_possession`; the timeline's "audit failed" then "repair copied" events; `minimol_audits_total` in `/metrics`.
+- **Admit:** A peer could relay a challenge to an honest holder and pass on its answer; stopping that needs per-node identities (planned). Between audits a bad copy can count for a short while.
 
 **Q62. What if a peer lies about its free space?** · *Owner: P2*
 - **Answer:** Free space is only used to decide who's eligible; a copy counts only after the PUT succeeds with a signed reply. If the liar rejects the PUT with "quota full", it goes suspect, waits 15 s at the back, and the next-ranked peer gets the copy.
@@ -610,7 +610,7 @@
 - **Follow-up:** Upgrades with format changes?
 - **Response:** Manifests and the index carry a format number and the crypto labels carry `v1`, so a v2 can coexist, but we haven't written a migration.
 - **Show:** `docker compose up -d --build`; `test_stats_shows_dead_peers_and_repair`.
-- **Admit:** No metrics export or alerting.
+- **Admit:** `/metrics` exports Prometheus counters (peer states, traffic per peer, audits, scrub, repair), but we ship no alerting rules or dashboards for it.
 
 ## N. Competitive alternatives
 
@@ -812,11 +812,11 @@
 - **Admit:** The window is real; the intervals are tunable.
 
 **Q106. Your doc says random spot checks are in the MVP. Where are they?** · *Owner: P2*
-- **Answer:** You're right, that row in the threat table overstates it. The code verifies on PUT, HEADs after repair, re-hashes every download, and fetches-and-hashes a chunk from slow-tier peers every 10 s. There's no random spot check of healthy peers.
+- **Answer:** They're in now: proof-of-storage audits challenge a random held chunk on another holder every 5 s (`node/audit.py`), on top of the slow-tier probes.
 - **Follow-up:** So the doc is wrong.
-- **Response:** On that row, yes; we'll correct it. Audits are (planned).
-- **Show:** `node/inventory.py` `probe_slow`; AD §12 table.
-- **Admit:** Doc overstated; concede immediately.
+- **Response:** It was, before audits landed; the threat table now matches the code.
+- **Show:** `node/audit.py`; `tests/test_audit.py`; AD §12 table.
+- **Admit:** Before audits, the doc overstated it.
 
 **Q107. You say the plaintext hash lives only in the encrypted manifest, but your node keeps it in a JSON file.** · *Owner: P1*
 - **Answer:** Correct: the local catalog cache stores names, sizes and plaintext hashes in plain JSON on the owner's own disk, and downloads return the hash in a header to the local user. Peers never see it, which is what AD §4 is protecting against.
@@ -931,9 +931,9 @@ Format: **J** = judge, **U** = us. "Weakness" is what a sharp judge finds in our
 - **U:** A copy counts only after a signed 200/201 from that node; repair HEADs again after copying; every read re-hashes.
 - **Weakness:** All of those trust the peer's own answer at that moment.
 - **J (tougher):** A malicious member stores chunks, answers HEAD correctly, then deletes them. What happens?
-- **Best answer:** Its inventory keeps listing them, so repair keeps counting it as a holder, and that chunk effectively has 2 real copies. We notice only when someone reads the chunk from it: the 404 makes the download fall back to another holder. The fix is a challenge-response audit: ask for a hash of the chunk with a random nonce, which you can only answer if you have the bytes (planned, `POST /audit`).
+- **Best answer:** Audits catch it. Every 5 s a holder of the same chunk sends a random nonce and expects HMAC-SHA256(nonce, chunk); without the bytes the peer can't answer, its copy is distrusted for 120 s, and repair copies the chunk to a laptop that really stores it. It doesn't need anyone to read the file first.
 - **Evidence:** AD §12 threat table; `node/repair.py`; `test_stale_location_map_falls_back_to_asking_everyone`.
-- **Concede when:** Immediately on "so R = 3 assumes honest peers": yes, it does today.
+- **Concede when:** On relay: a malicious peer could forward the challenge to an honest holder. Per-node identities would stop that (planned).
 
 ### 10. Sybil insider with fake host IDs
 - **J:** You prevent two copies on one host. But `host_id` is just a string the node reports.

@@ -207,18 +207,18 @@ export default function App() {
               }
             }}
           />
-          {logsFor && (files.data ?? []).some((f) => f.file_uuid === logsFor) && (
-            <FileLogs
-              file={(files.data ?? []).find((f) => f.file_uuid === logsFor)!}
-              peers={peers}
-              onClose={() => setLogsFor(null)}
-            />
-          )}
         </main>
       ) : (
         !stats.error && <p className="loading">Connecting to this node…</p>
       )}
       {previewing && unlocked && <Preview file={previewing} onClose={() => setPreviewing(null)} />}
+      {logsFor && (files.data ?? []).some((f) => f.file_uuid === logsFor) && (
+        <FileLogs
+          file={(files.data ?? []).find((f) => f.file_uuid === logsFor)!}
+          peers={peers}
+          onClose={() => setLogsFor(null)}
+        />
+      )}
     </div>
   );
 }
