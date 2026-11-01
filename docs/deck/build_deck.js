@@ -439,7 +439,7 @@ async function build() {
       [C.accent3, C.text1, "0%", "of new copies on the slow peer (random: 21.7%)"],
       [C.accent2, C.background1, "≈ 20–40 s", "from a node dying to every chunk back at 3 copies"],
       [C.background1, C.text1, "0.19 MB", "sent to re-upload a 20 MB file after a 1% append"],
-      [C.background1, C.text1, "166 + 1", "automated tests passing, plus a live 4-node cluster test"],
+      [C.background1, C.text1, "171 + 1", "automated tests passing, plus a live 4-node cluster test"],
     ];
     const tw = 3.85, th = 2.25, gx = 0.27, gy = 0.3;
     tiles.forEach(([fill, ink, big, label], i) => {
@@ -449,6 +449,46 @@ async function build() {
       text(s, label, { x: x + 0.35, y: y + 1.2, w: tw - 0.7, h: 0.9, fontSize: 14, color: ink });
     });
     text(s, "4-node Docker cluster on one laptop · real encryption + compression · node-4 delayed 300 ms (simulated) · median of 5 runs", { x: M, y: 6.6, w: W - 2 * M, h: 0.3, fontSize: 10, color: C.text2 });
+  }
+
+  // ===== 11b. Real laptops =====
+  {
+    const s = content("Evidence", t("Tested on three ", "real laptops", C.accent4),
+      "Everything on the previous slide also ran on three real laptops over campus Wi-Fi. Each laptop ran the same automated self-test. Laptop 3 was switched off and on during the run, and laptop 2 was replaced by an empty node; both healed on their own. Numbers are from the run on 1 November.");
+    const tiles = [
+      [C.accent4, C.background1, "6 s", "for a file uploaded while a laptop was off to heal once it rejoined"],
+      [C.accent1, C.background1, "≈ 19 s", "to refill an empty replacement laptop (13 repair copies)"],
+      [C.accent3, C.text1, "8 / 8", "files downloaded, SHA-256 match, with a laptop switched off"],
+      [C.background1, C.text1, "0.85%", "of the file sent to re-upload after a 1% edit"],
+    ];
+    const tw = 2.95, th = 2.3, g = 0.3;
+    tiles.forEach(([fill, ink, big, label], i) => {
+      const x = M + (i % 2) * (tw + g), y = 1.6 + Math.floor(i / 2) * (th + g);
+      block(s, x, y, tw, th, fill);
+      text(s, big, { x: x + 0.3, y: y + 0.28, w: tw - 0.6, h: 0.8, fontSize: 36, bold: true, color: ink });
+      text(s, label, { x: x + 0.3, y: y + 1.15, w: tw - 0.6, h: 1.0, fontSize: 14, color: ink });
+    });
+    const cx = M + 2 * tw + g + 0.35, cw = W - M - cx;
+    block(s, cx, 1.6, cw, 4.9, C.background1);
+    await iconInCircle(s, md.MdVerified, cx + 0.3, 1.85, 0.75, C.accent4, HEX.paper);
+    text(s, "Every laptop passed", { x: cx + 1.25, y: 1.98, w: cw - 1.5, h: 0.5, fontSize: 20, bold: true });
+    const checks = [
+      [C.accent1, "CSV compressed to 0.30× its size"],
+      [C.accent4, "Every chunk on 3 distinct laptops"],
+      [C.accent2, "Every download matches its SHA-256"],
+      [C.accent3, "Flipped byte caught, file still correct"],
+      [C.accent1, "Wrong passphrase sees no files"],
+      [C.accent4, "Wrong cluster key can't join"],
+      [C.accent2, "0 of 261 stored chunks readable"],
+      [C.accent3, "File list restored from peers on unlock"],
+    ];
+    checks.forEach(([c, label], i) => {
+      const y = 2.85 + i * 0.44;
+      dot(s, cx + 0.35, y + 0.09, c, 0.17);
+      text(s, label, { x: cx + 0.68, y, w: cw - 1.75, h: 0.36, fontSize: 14 });
+      text(s, "3/3", { x: cx + cw - 0.95, y, w: 0.65, h: 0.36, fontSize: 14, bold: true, color: C.accent4, align: "right" });
+    });
+    text(s, "3 laptops · campus Wi-Fi, 18–140 ms round trips · real encryption + compression · 1 Nov 2026 · slow-node A/B is from the Docker run", { x: M, y: 6.6, w: W - 2 * M, h: 0.3, fontSize: 10, color: C.text2 });
   }
 
   // ===== 12. Comparison =====

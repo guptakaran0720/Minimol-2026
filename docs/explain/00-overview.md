@@ -76,7 +76,7 @@ If the laptops can't reach each other, we run the same demo on Docker (`docker c
 
 ## Evidence
 
-- `pytest`: 166 passed, 1 skipped (the live cluster test, which needs a running cluster).
+- `pytest`: 171 passed, 1 skipped (the live cluster test, which needs a running cluster).
 - [tests/test_cluster.py::test_upload_kill_download_repair_recover](../../tests/test_cluster.py#L46) covers demo steps 1–7 end to end. It passed against the Docker cluster and against [scripts/run_cluster.sh](../../scripts/run_cluster.sh).
 - Docker cluster, 4 containers on one laptop, real encryption and compression, node-4 delayed 300 ms (simulated), 5 reps, medians:
 
