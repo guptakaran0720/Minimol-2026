@@ -44,7 +44,8 @@ The original order was: whole file → compress → encrypt → split into chunk
 - **Verdict: CHANGE to per-chunk processing.**
 
 Details:
-- Each chunk's 96-bit nonce is **synthetic**: `HMAC-SHA256(DEK, compressed_flag || plaintext_chunk)[:12]`. This enables delta sync (see §14).
+- The file is read and encoded one chunk at a time (`encode_chunk`), so the whole file is never in RAM.
+- Each chunk's 96-bit nonce is **synthetic**: `HMAC-SHA256(nonce_key, compressed_flag || plaintext_chunk)[:12]`, where `nonce_key = HKDF-SHA256(DEK, info="minimol-2026/nonce/v1")`. A separate nonce key means the DEK is used only for AES-GCM. This enables delta sync (see §14).
 - The AAD (data that is authenticated but not encrypted) is `file_uuid || compressed_flag`. This stops a chunk being moved into a different file. The chunk's position is protected by the ordered chunk list in the authenticated manifest.
 - Stored blob = `nonce || ciphertext || tag`.
 - Empty file = 0 chunks.
@@ -62,14 +63,14 @@ Details:
 
 - **Counter to the original:** If the uploader's laptop dies, every file is lost, even though every chunk has 3 copies. That makes the redundancy claim false.
 - **New design:**
-  - `passphrase → scrypt → master secret`.
+  - `scrypt(passphrase, salt = owner_salt(username)) → master secret`. The salt is fixed by `node/contracts.py` as `SHA-256("minimol-2026/owner-salt/v1|" || username)`, so a fresh laptop needs no stored salt file. The username keeps two users with the same passphrase from getting the same keys.
   - The master secret produces two keys:
     - a **key-encryption key (KEK)**, which encrypts each file's data key and the manifests,
     - an **Ed25519 owner signing key**.
   - Each file gets a random data key (DEK), which is stored *encrypted* inside its manifest. New versions of the same file (same name, same owner) reuse the file's UUID and DEK.
 - **Counter to the new design:** A weak passphrase can be guessed offline by anyone holding the encrypted manifests.
 - **Defense:** Use expensive scrypt parameters and require at least 12 characters. Only cluster members can fetch manifests.
-- **Verdict: CHANGE.** This enables the best demo moment: **a fresh laptop recovers every file using only the passphrase.**
+- **Verdict: CHANGE.** This enables the best demo moment: **a fresh laptop recovers every file using only the username and passphrase.**
 
 ## 6. Redundancy: 3 full copies (R = 3), not erasure coding
 
@@ -99,6 +100,7 @@ Also note that a peer being reachable (availability) is not the same as the data
 How metadata is stored:
 - **Manifest:** encrypted under the KEK and stored as a content-addressed object with 3 copies, exactly like a chunk. It contains: file UUID, name, size, plaintext SHA-256, the encrypted data key, and the ordered list of chunk IDs, sizes and flags.
 - **Owner index:** the owner's list of manifest IDs, stored at slot = the owner's public key as `{version, encrypted index}` and signed with Ed25519. Peers reject records with bad signatures and keep only the highest version.
+- **File versions:** the index holds **one manifest ID per file** (the latest). Re-uploading a file with the same name reuses its UUID and DEK, writes a new manifest with `version + 1`, and replaces the old manifest ID in the index. Old manifests and chunks stay on peers until garbage collection (*planned*).
 - **Known limits:**
   - Only one device should write the index at a time (a CRDT merge is *planned*).
   - A peer could return an older version (rollback). We reduce this by asking all holders and taking the highest valid version.
@@ -167,7 +169,7 @@ How metadata is stored:
 
 - **Counter to the original:** With no authentication, anyone on the Wi-Fi can fill peers' disks or poison the peer table.
 - **New design:**
-  - Every peer request carries `HMAC-SHA256(cluster_key, method|path|ts|sha256(body))` and is accepted only within ±30 s of the timestamp.
+  - Every peer request carries `HMAC-SHA256(cluster_key, method|path|node_id|ts|sha256(body))` and is accepted only within ±30 s of the timestamp. Signing `node_id` (the `X-Node` header) stops a captured request being replayed under another node's name.
   - Per-node disk quota; a full node returns `507`.
   - Body size caps: chunk ≤ 1 MiB + 64 B, upload ≤ 256 MiB, otherwise `413`. FastAPI and Starlette have no default cap ([starlette#2155](https://github.com/encode/starlette/issues/2155)).
   - No peer `DELETE` endpoint.
@@ -204,7 +206,7 @@ This is the same idea as our production delta OTA pipeline, which shipped a 21.6
 
 - **Pick:**
   - A new version of a file reuses that file's DEK.
-  - Each chunk's nonce is `HMAC(DEK, flag || plaintext)[:12]`, so an unchanged chunk encrypts to exactly the same bytes and gets the same chunk ID.
+  - Each chunk's nonce is `HMAC(nonce_key, flag || plaintext)[:12]` (nonce key derived from the DEK, see §3), so an unchanged chunk encrypts to exactly the same bytes and gets the same chunk ID.
   - Before uploading a chunk, check the location map. If the chunk already has ≥ 3 live copies on distinct hosts, skip it.
 - **Counter 1: a deterministic nonce is dangerous with AES-GCM.**
   - GCM breaks only when one (key, nonce) pair encrypts *different* plaintexts.
@@ -264,7 +266,7 @@ flowchart LR
 4. Kill a peer. The download still works and the SHA-256 matches.
 5. Repair brings every chunk back to 3 copies. Show the measured repair time.
 6. Kill a second **original** holder. The download still works. This demonstrates durability, not just a lucky retrieval.
-7. A fresh laptop recovers every file using only the passphrase.
+7. A fresh laptop recovers every file using only the username and passphrase.
 8. Append rows to the log and re-upload. Only the changed chunks are sent; show measured bytes sent vs file size.
 
 **If we're behind, cut in this order:** hedged reads → delta sync → passphrase recovery → mDNS → dashboard polish. **Never cut steps 4 and 5.**
