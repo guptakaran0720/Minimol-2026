@@ -8,6 +8,12 @@ Scrubbing (scrub_some) re-hashes stored chunks a few at a time in the
 background. A chunk whose bytes no longer match its ID (disk rot, tampering)
 is moved to quarantine/ and dropped from the store, so it disappears from
 /inventory; peers then see one copy missing and repair restores it.
+
+Deletion: each chunk may carry delete_hash = sha256(token), stored in delhash/.
+Only the owner can derive the token (HMAC of the chunk id under their KEK), so
+only the owner can delete. A deleted id leaves a tombstone holding the revealed
+token; a later PUT of that id is refused with it, which lets a holder that was
+offline during the delete verify the token and drop its own copy.
 """
 from __future__ import annotations
 
@@ -20,7 +26,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from node.contracts import HashMismatch, QuotaExceeded
+from node.contracts import ChunkDeleted, HashMismatch, QuotaExceeded
 
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
@@ -55,7 +61,11 @@ class DiskChunkStore:
         self._chunks = self.root / "chunks"
         self._tmp = self.root / "tmp"
         self._quarantine = self.root / "quarantine"
+        self._delhash_dir = self.root / "delhash"
+        self._tomb_dir = self.root / "tombstones"
         self._chunks.mkdir(parents=True, exist_ok=True)
+        self._delhash_dir.mkdir(exist_ok=True)
+        self._tomb_dir.mkdir(exist_ok=True)
         self._tmp.mkdir(parents=True, exist_ok=True)
         for leftover in self._tmp.iterdir():
             leftover.unlink()
@@ -65,18 +75,27 @@ class DiskChunkStore:
             if is_hex64(f.name):
                 self._sizes[f.name] = f.stat().st_size
         self._used = sum(self._sizes.values())
+        self._delhash = {f.name: f.read_text().strip() for f in self._delhash_dir.iterdir() if is_hex64(f.name)}
+        self._tombs = {f.name: f.read_text().strip() for f in self._tomb_dir.iterdir() if is_hex64(f.name)}
         self._scrub_cursor = 0
         self.scrub_stats = {"checked": 0, "quarantined": 0, "missing": 0, "passes": 0, "last_pass_at": None}
 
     def _path(self, chunk_id: str) -> Path:
         return self._chunks / chunk_id[:2] / chunk_id
 
-    def put(self, chunk_id: str, blob: bytes) -> bool:
+    def put(self, chunk_id: str, blob: bytes, delete_hash: str | None = None) -> bool:
         if not is_hex64(chunk_id):
             raise ValueError("chunk_id must be 64 lowercase hex characters")
+        if delete_hash is not None and not is_hex64(delete_hash):
+            raise ValueError("delete_hash must be 64 lowercase hex characters")
         if hashlib.sha256(blob).hexdigest() != chunk_id:
             raise HashMismatch(chunk_id)
         with self._lock:
+            if chunk_id in self._tombs:
+                raise ChunkDeleted(chunk_id, self._tombs[chunk_id])
+            if delete_hash and chunk_id not in self._delhash:   # first writer's hash wins
+                _atomic_write(self._delhash_dir / chunk_id, delete_hash.encode(), self._tmp)
+                self._delhash[chunk_id] = delete_hash
             if chunk_id in self._sizes:
                 return False
             if self._used + len(blob) > self.quota_bytes:
@@ -108,6 +127,43 @@ class DiskChunkStore:
 
     def free_bytes(self) -> int:
         return max(0, self.quota_bytes - self._used)
+
+    # ---- deletion ----
+
+    def delete_hash(self, chunk_id: str) -> str | None:
+        return self._delhash.get(chunk_id)
+
+    def tombstone(self, chunk_id: str) -> str | None:
+        return self._tombs.get(chunk_id)
+
+    def delete(self, chunk_id: str, token: str) -> str:
+        """deleted (also when already deleted with this token), absent, forbidden, or
+        unprotected (stored without a delete hash, so nobody can prove ownership)."""
+        if not is_hex64(chunk_id) or not is_hex64(token):
+            return "forbidden"
+        with self._lock:
+            if chunk_id in self._tombs:
+                return "deleted" if self._tombs[chunk_id] == token else "forbidden"
+            expected = self._delhash.get(chunk_id)
+            if expected is None:
+                return "absent" if chunk_id not in self._sizes else "unprotected"
+            if hashlib.sha256(bytes.fromhex(token)).hexdigest() != expected:
+                return "forbidden"
+            _atomic_write(self._tomb_dir / chunk_id, token.encode(), self._tmp)
+            self._tombs[chunk_id] = token
+            size = self._sizes.pop(chunk_id, None)
+            if size is not None:
+                self._used -= size
+                try:
+                    self._path(chunk_id).unlink()
+                except FileNotFoundError:
+                    pass
+            self._delhash.pop(chunk_id, None)
+            try:
+                (self._delhash_dir / chunk_id).unlink()
+            except FileNotFoundError:
+                pass
+            return "deleted"
 
     # ---- scrubbing ----
 
