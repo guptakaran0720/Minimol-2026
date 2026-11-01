@@ -44,8 +44,8 @@ The original order was: whole file → compress → encrypt → split into chunk
 - **Verdict: CHANGE to per-chunk processing.**
 
 Details:
-- Each chunk gets a fresh random 96-bit nonce.
-- The AAD (data that is authenticated but not encrypted) is `file_uuid || chunk_index || compressed_flag`. This stops a chunk being swapped into a different position or a different file.
+- Each chunk's 96-bit nonce is **synthetic**: `HMAC-SHA256(DEK, compressed_flag || plaintext_chunk)[:12]`. This enables delta sync (see §14).
+- The AAD (data that is authenticated but not encrypted) is `file_uuid || compressed_flag`. This stops a chunk being moved into a different file. The chunk's position is protected by the ordered chunk list in the authenticated manifest.
 - Stored blob = `nonce || ciphertext || tag`.
 - Empty file = 0 chunks.
 - A file whose size is an exact multiple of 1 MiB gets no trailing empty chunk.
@@ -56,7 +56,7 @@ Details:
 - **Counter:** Every upload is encrypted with fresh random keys and nonces, so identical files are stored twice. There is no deduplication.
 - **Alternative:** Convergent encryption, where the key is derived from the file content so identical files encrypt identically.
 - **Counter to the alternative:** It lets anyone confirm whether a known file is stored. Tahoe-LAFS mixes a per-client "convergence secret" into the key for exactly this reason ([Tahoe-LAFS config docs](https://tahoe-lafs.readthedocs.io/en/latest/configuration.html)).
-- **Verdict: KEEP hashing the ciphertext.** Also change `file_id` from `sha256(plaintext)` to a **random UUID**, because a plaintext hash leaks the same confirmation information. The plaintext SHA-256 is stored only inside the encrypted manifest.
+- **Verdict: KEEP hashing the ciphertext.** There is no deduplication *across users*. Deduplication *across versions of the same file* is added in §14. Also change `file_id` from `sha256(plaintext)` to a **random UUID**, because a plaintext hash leaks the same confirmation information. The plaintext SHA-256 is stored only inside the encrypted manifest.
 
 ## 5. Keys come from a passphrase, not a key file on one laptop
 
@@ -66,7 +66,7 @@ Details:
   - The master secret produces two keys:
     - a **key-encryption key (KEK)**, which encrypts each file's data key and the manifests,
     - an **Ed25519 owner signing key**.
-  - Each file gets a random data key (DEK), which is stored *encrypted* inside its manifest.
+  - Each file gets a random data key (DEK), which is stored *encrypted* inside its manifest. New versions of the same file (same name, same owner) reuse the file's UUID and DEK.
 - **Counter to the new design:** A weak passphrase can be guessed offline by anyone holding the encrypted manifests.
 - **Defense:** Use expensive scrypt parameters and require at least 12 characters. Only cluster members can fetch manifests.
 - **Verdict: CHANGE.** This enables the best demo moment: **a fresh laptop recovers every file using only the passphrase.**
@@ -198,6 +198,28 @@ How metadata is stored:
   - Bring our own hotspot.
   - Discovering a peer is not the same as being able to connect to it. A peer counts as alive only after an authenticated heartbeat succeeds.
 
+## 14. Delta sync: re-uploading a changed file sends only the changed chunks
+
+This is the same idea as our production delta OTA pipeline, which shipped a 21.6 MB app release as 0.41 MB by sending only changed files.
+
+- **Pick:**
+  - A new version of a file reuses that file's DEK.
+  - Each chunk's nonce is `HMAC(DEK, flag || plaintext)[:12]`, so an unchanged chunk encrypts to exactly the same bytes and gets the same chunk ID.
+  - Before uploading a chunk, check the location map. If the chunk already has ≥ 3 live copies on distinct hosts, skip it.
+- **Counter 1: a deterministic nonce is dangerous with AES-GCM.**
+  - GCM breaks only when one (key, nonce) pair encrypts *different* plaintexts.
+  - Here the nonce is derived from the plaintext under a secret key, so the same nonce implies the same plaintext and the result is identical ciphertext.
+  - A collision of the 96-bit truncation is the only failure mode, and its probability is negligible at our scale (about 2^-48 even with 2^24 chunks under one key).
+  - This is the synthetic-IV idea behind deterministic AEAD (SIV, RFC 5297).
+- **Counter 2: it leaks equality.**
+  - True, and we say so: peers can see which chunks are unchanged between two versions of *the same owner's file*.
+  - Nothing leaks across files or users, because each file has its own DEK.
+- **Counter 3: an insertion shifts every later chunk, so fixed-size chunks stop matching.**
+  - True. Delta sync helps appends and in-place edits, such as logs, CSVs and datasets.
+  - Content-defined chunking (FastCDC) is the roadmap fix for insertions.
+- **Counter 4: is this worth the time?** It costs about 1 hour, gives the team a differentiator nobody else will have, and its effect is easy to measure (bytes sent vs file size).
+- **Verdict: ADD.** In the cut list it comes after repair.
+
 ---
 
 ## Counter to the whole idea: "Isn't this just a smaller Tahoe-LAFS?"
@@ -206,13 +228,14 @@ Partly, and we say so. None of the algorithms are new. Our contribution is:
 - repair that doesn't depend on the uploader,
 - routing with a measured comparison against a baseline,
 - recovery on a new device from a passphrase,
+- encrypted delta sync, our OTA experience applied to storage,
 - all of it working live on 4 laptops, with numbers.
 
 This is an engineering integration achievement, not an invention.
 
 ## Final architecture (one paragraph)
 
-LAN peer-to-peer in Python. Each file is split into 1 MiB chunks, and each chunk is compressed with zstd, then encrypted with AES-GCM. The chunk ID is the SHA-256 of the ciphertext. Every chunk gets 3 copies on 3 different hosts. Placement uses fixed-weight rendezvous hashing with a slow tier. Downloads choose holders by estimated fetch time, with optional hedged reads. Manifests are encrypted, immutable and replicated. Each owner has a signed index, and keys come from a passphrase. Nodes learn chunk locations by pulling each other's inventories. Repair is run by an elected holder. Peers authenticate with a cluster HMAC.
+LAN peer-to-peer in Python. Each file is split into 1 MiB chunks, and each chunk is compressed with zstd, then encrypted with AES-GCM. The chunk ID is the SHA-256 of the ciphertext. Every chunk gets 3 copies on 3 different hosts. Placement uses fixed-weight rendezvous hashing with a slow tier. Downloads choose holders by estimated fetch time, with optional hedged reads. Manifests are encrypted, immutable and replicated. Each owner has a signed index, and keys come from a passphrase. Nodes learn chunk locations by pulling each other's inventories. Repair is run by an elected holder. Peers authenticate with a cluster HMAC. Synthetic nonces make re-uploads send only the changed chunks.
 
 ```mermaid
 flowchart LR
@@ -242,8 +265,9 @@ flowchart LR
 5. Repair brings every chunk back to 3 copies. Show the measured repair time.
 6. Kill a second **original** holder. The download still works. This demonstrates durability, not just a lucky retrieval.
 7. A fresh laptop recovers every file using only the passphrase.
+8. Append rows to the log and re-upload. Only the changed chunks are sent; show measured bytes sent vs file size.
 
-**If we're behind, cut in this order:** hedged reads → passphrase recovery → mDNS → dashboard polish. **Never cut steps 4 and 5.**
+**If we're behind, cut in this order:** hedged reads → delta sync → passphrase recovery → mDNS → dashboard polish. **Never cut steps 4 and 5.**
 
 ## Sources
 
