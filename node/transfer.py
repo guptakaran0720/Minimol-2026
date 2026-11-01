@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import time
 import uuid
@@ -41,6 +42,8 @@ from node.routing import (
     rank_for_retrieval,
     rank_for_retrieval_baseline,
 )
+
+log = logging.getLogger(__name__)
 
 MANIFEST_SIZE_HINT = 64 * 1024
 # The baselines exist only so bench.py can A/B the real strategies against them.
@@ -82,6 +85,7 @@ class Transfer:
         self.hedge_min_s = hedge_min_s
         self.hedges_fired = 0
         self.unrecovered: list[str] = []      # manifest ids the last recover() could not fetch
+        self.last_index_acks = 0              # peers that accepted the last published owner index
         self.keys = keys
         self.codec = codec
         self.peers = peers
@@ -163,7 +167,9 @@ class Transfer:
                 "sha256": manifest.sha256,
                 "chunk_ids": [r["chunk_id"] for r in rows],
             }
-            await self._publish_index()
+            self.last_index_acks = await self._publish_index()
+            if self.last_index_acks == 0:
+                log.warning("no peer accepted owner index v%d; this upload is only in the local catalog", self.index_version)
             self._save_catalog()
 
         copies = [len(h) for _, h, _ in placed] + [len(manifest_holders)]

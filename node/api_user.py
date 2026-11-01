@@ -170,6 +170,9 @@ def create_router(source) -> APIRouter:
         out = asdict(result)
         out["compression_ratio"] = (round(result.encoded_bytes / result.original_bytes, 4)
                                     if result.original_bytes else None)
+        # 0 means no peer stored the new file list (e.g. another device wrote a newer one):
+        # the file is safe on peers but a fresh laptop would not find it until the next upload.
+        out["index_acks"] = transfer.last_index_acks
         return out
 
     @router.get("/files")
