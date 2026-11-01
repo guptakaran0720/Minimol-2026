@@ -1,6 +1,8 @@
 import asyncio
+import io
 import os
 
+from node.contracts import owner_salt
 from node.repair import Repairer
 from node.transfer import Transfer
 from tests.fakes import FakeStore, make_cluster
@@ -13,10 +15,10 @@ def run(coro):
 
 
 def cluster(n=5, chunks=12):
-    net, table, client, locs, codec = make_cluster(n, CHUNK)
-    t = Transfer(codec.derive_master("pw", b"salt"), codec, table, client, locs)
+    net, table, client, locs, codec = make_cluster(n)
+    t = Transfer(codec.derive_master("pw", owner_salt("karan")), codec, table, client, locs, chunk_size=CHUNK)
     data = os.urandom(CHUNK * chunks)
-    res = run(t.upload(data, "f"))
+    res = run(t.upload(io.BytesIO(data), "f"))
     return net, table, client, locs, t, data, res
 
 
@@ -36,6 +38,12 @@ def all_objects(net):
     return {cid for s in net.stores.values() for cid in s}
 
 
+def fetch(t, file_uuid):
+    out = io.BytesIO()
+    run(t.download(file_uuid, out))
+    return out.getvalue()
+
+
 def repair_round(reps):
     async def go():
         return await asyncio.gather(*(r.run_once() for r in reps.values()))
@@ -51,7 +59,7 @@ def test_kill_one_node_repairs_every_chunk_back_to_three_hosts():
     assert sum(s["copies"] for s in stats) > 0
     for cid in all_objects(net):
         assert len(live_hosts(net, table, cid)) >= 3
-    assert run(t.download(res.file_uuid)) == data
+    assert fetch(t, res.file_uuid) == data
 
 
 def test_survives_two_sequential_failures_after_repair():
@@ -64,7 +72,7 @@ def test_survives_two_sequential_failures_after_repair():
     table.kill(net, second)
     locs.refresh()
     repair_round(repairers(net, table, client, locs))
-    assert run(t.download(res.file_uuid)) == data
+    assert fetch(t, res.file_uuid) == data
 
 
 def test_only_leader_copies_in_first_round():
@@ -123,7 +131,7 @@ def test_only_two_hosts_left_reports_degraded():
     locs.refresh()
     stats = repair_round(repairers(net, table, client, locs, takeover_rounds=0))
     assert sum(s["degraded"] for s in stats) > 0
-    assert run(t.download(res.file_uuid)) == data
+    assert fetch(t, res.file_uuid) == data
 
 
 def test_corrupt_local_copy_is_not_spread():
