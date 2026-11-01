@@ -51,7 +51,7 @@ Measured: per-node dead detection was **19.5–20.6 s**. Killing node-2 in the D
 ## Limits
 
 - Fixed thresholds, not adaptive. Phi-accrual is a known upgrade, not built.
-- A `/health` reply proves the process is up, not that it still has its chunks. Downloads re-hash every chunk, but there are no proactive storage audits (planned).
+- A `/health` reply proves the process is up, not that it still has its chunks. Downloads re-hash every chunk, and each node scrubs its own disk in the background, but no node challenges a *remote* peer to prove it still stores its chunks (audits planned).
 - A peer that answers heartbeats but hangs on chunk transfers is caught by transfer failures (suspect + cooldown) and by the slow tier, not by heartbeats.
 - If a peer accepts the connection but never answers, one heartbeat round can take up to the 5 s read timeout before the next 2 s sleep. Detection still converges, just a few seconds later.
 - Every node keeps its own view. Two nodes can briefly disagree about who is alive; repair is designed to tolerate that (doc 06).

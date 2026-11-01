@@ -68,7 +68,7 @@ Updated from [ARCHITECTURE_DECISIONS.md §12](../ARCHITECTURE_DECISIONS.md#12-se
 
 - Not open-network safe: anyone with the cluster key is trusted as a member.
 - Plain HTTP between nodes; TLS is (planned).
-- No proactive storage audits (planned).
+- No challenge audits of remote peers (planned). Each node does scrub its own disk and quarantine rotten chunks.
 - No per-user quotas; the quota is per node.
 - We haven't had an external security review. These are our own tests.
 
