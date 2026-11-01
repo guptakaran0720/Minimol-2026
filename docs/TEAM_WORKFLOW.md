@@ -52,14 +52,15 @@ Points everyone must match:
 |---|---|---|
 | GET | `/health` | `{node_id, host_id, free_bytes, used_bytes, chunk_count, uptime_s}` |
 | GET | `/peers` | `[{node_id, host_id, addr}]` (gossip) |
-| PUT | `/chunks/{id}` | 201 new, 200 already present, 400 hash mismatch, 413 too big, 507 quota full |
+| PUT | `/chunks/{id}` and `/chunks/{id}/{delete_hash}` | 201 new, 200 already present, 400 hash mismatch, 410 deleted by its owner (body reveals the token), 413 too big, 507 quota full |
+| DELETE | `/chunks/{id}` (body `{token}`) | 200 deleted, 403 wrong token, 404 absent, 409 stored without a delete hash |
 | GET | `/chunks/{id}` | raw bytes, or 404 |
 | HEAD | `/chunks/{id}` | 200 or 404 |
 | GET | `/inventory` | `[chunk_id, ...]` |
 | PUT | `/index/{owner_pub}` | 201; 409 if the version is not newer; 401 bad signature |
 | GET | `/index/{owner_pub}` | signed record, or 404 |
 
-There is **no** DELETE route.
+Deleting needs the owner's token, not just the cluster key (ARCHITECTURE_DECISIONS.md §15).
 
 **User API (P3):** served on the node's port, but every route answers only localhost callers (403 otherwise; `USER_API_ALLOW` is for Docker only).
 
@@ -67,7 +68,9 @@ There is **no** DELETE route.
 |---|---|
 | POST | `/files?name=<name>` (raw file bytes as the body, ≤ 256 MiB, else 413) |
 | GET | `/files` |
-| GET | `/files/{uuid}` (served only after the whole-file SHA-256 matches; header `X-File-SHA256`) |
+| GET | `/files/{uuid}` (served only after the whole-file SHA-256 matches; header `X-File-SHA256`; `?inline=true` previews, serving anything that could run code as plain text inside a CSP sandbox) |
+| DELETE | `/files/{uuid}` (removes it from the file list and erases its chunks from every peer) |
+| POST | `/logout` (drops keys from memory, stops syncing, deletes the local file-list cache) |
 | GET | `/files/{uuid}/map` |
 | GET | `/stats` (works while locked; feeds the dashboard) |
 | POST | `/recover` (body: `{username, passphrase}`; unlocks the node and pulls the owner index. Every other route returns 401 until this succeeds) |

@@ -21,7 +21,7 @@
    | `PUT /index/{owner_pub}` | 201; 401 bad signature; 409 version not newer ([line 173](../../node/api_peer.py#L173)) |
    | `GET /index/{owner_pub}` | the stored signed record, or 404 |
 
-   There is **no DELETE route.** Bodies are capped *while they stream in*: chunks at 1 MiB + 64 B, index records at 1 MiB ([read_capped at api_peer.py:71](../../node/api_peer.py#L71), [config.py:27](../../node/config.py#L27)).
+   `DELETE /chunks/{id}` exists but needs the **owner's delete token** in the signed body: the peer checks `SHA-256(token)` against the hash stored with the chunk, then keeps a tombstone (ARCHITECTURE_DECISIONS.md §15). Bodies are capped *while they stream in*: chunks at 1 MiB + 64 B, index records at 1 MiB ([read_capped at api_peer.py:71](../../node/api_peer.py#L71), [config.py:27](../../node/config.py#L27)).
 5. **Request signing.** Every peer request carries `X-Node`, `X-Ts`, `X-Sig`, where `X-Sig = HMAC-SHA256(cluster_key, method|path|node_id|ts|sha256(body))` ([auth.py:23](../../node/auth.py#L23)). The server accepts it only within ±30 s of `X-Ts` and compares in constant time ([auth.py:34](../../node/auth.py#L34)). Because `node_id` is inside the signature, a captured request can't be replayed under another node's name.
 6. **Response signing.** Middleware signs every answer to an authenticated request: `X-Resp-Sig = HMAC(cluster_key, RESPONSE|status|request X-Sig|node_id|sha256(body))`, with the responder in `X-Node` ([api_peer.py:38](../../node/api_peer.py#L38), [auth.py:53](../../node/auth.py#L53)). The client rejects unsigned answers, bad signatures, and answers from a different node than the one it called ([peer_client.py:40](../../node/peer_client.py#L40)). Binding the request's signature means an old answer can't be replayed as the answer to a new question.
 
@@ -29,7 +29,7 @@
 
 ## Why this design
 
-**Decision:** cluster-wide HMAC on requests *and* responses, quotas, body caps, no remote delete. See [ARCHITECTURE_DECISIONS.md §12](../ARCHITECTURE_DECISIONS.md#12-security-cluster-hmac-quotas-no-remote-delete).
+**Decision:** cluster-wide HMAC on requests *and* responses, quotas, body caps, owner-only delete. See [ARCHITECTURE_DECISIONS.md §12](../ARCHITECTURE_DECISIONS.md#12-security-cluster-hmac-quotas-no-remote-delete).
 
 - **Strongest counter:** one leaked laptop exposes the shared key for the whole cluster.
 - **Our defense:** true, and per-node identities with mutual TLS are the better design (planned). But the data is encrypted on the client, so even a full cluster member only ever sees ciphertext. And without the HMAC, anyone on the Wi-Fi could fill disks or answer `HEAD` with a fake "I have it".

@@ -421,7 +421,7 @@ async function build() {
       [C.accent2, "AES-GCM rejects any tampered byte"],
       [C.accent3, "Peer requests HMAC-signed, ±30 s window"],
       [C.accent1, "Owner file list signed; highest version wins"],
-      [C.accent4, "Quotas, size caps, no remote delete"],
+      [C.accent4, "Quotas, size caps, owner-only delete"],
     ];
     guards.forEach(([c, g], i) => {
       dot(s, 6.95, 3.03 + i * 0.55, c, 0.18);
@@ -439,7 +439,7 @@ async function build() {
       [C.accent3, C.text1, "0%", "of new copies on the slow peer (random: 21.7%)"],
       [C.accent2, C.background1, "≈ 20–40 s", "from a node dying to every chunk back at 3 copies"],
       [C.background1, C.text1, "0.19 MB", "sent to re-upload a 20 MB file after a 1% append"],
-      [C.background1, C.text1, "171 + 1", "automated tests passing, plus a live 4-node cluster test"],
+      [C.background1, C.text1, "193 + 1", "automated tests passing, plus a live 4-node cluster test"],
     ];
     const tw = 3.85, th = 2.25, gx = 0.27, gy = 0.3;
     tiles.forEach(([fill, ink, big, label], i) => {

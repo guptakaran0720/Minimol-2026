@@ -94,7 +94,7 @@ So the honest figure is **about 20–40 s**.
 
 | Check | Result |
 |---|---|
-| `pytest` (Python 3.12 local, 3.11 in Docker) | 171 passed, 1 skipped (the live cluster test, which needs running nodes) |
+| `pytest` (Python 3.12 local, 3.11 in Docker) | 193 passed, 1 skipped (the live cluster test, which needs running nodes) |
 | `tests/test_cluster.py` on Docker and on local processes | passed: upload → distinct hosts → kill → download → dead → repair → recover on another node → second kill → download |
 | Fresh-node recovery from username + passphrase | passed (part of the cluster test) |
 
@@ -126,7 +126,7 @@ So the honest figure is **about 20–40 s**.
 | File uploaded on another laptop appears here | PASS | — | PASS |
 | File list rebuilt from peers after deleting the local cache | — | — | PASS 6/6 |
 | Brand-new empty node recovers everything from username + passphrase | — | PASS 7/7 | — |
-| Unit tests | PASS 171 passed | — | — |
+| Unit tests | PASS 171 passed (at the time of the run) | — | — |
 
 ¹ The only failure in laptop 2's report was a probe of an old, no-longer-used laptop-4 address. Both live peers answered 401.
 
