@@ -1,8 +1,11 @@
 {
   "name": "minimol-deck",
   "private": true,
-  "description": "Builds docs/Minimol_Storage_Pitch.pptx: npm ci && npm run build",
-  "scripts": { "build": "node build_deck.js" },
+  "description": "Builds docs/Minimol_Storage_Pitch.pptx (npm run build) and the 10-slide docs/Minimol_Storage_Pitch_10.pptx (npm run build:10): npm ci first",
+  "scripts": {
+    "build": "node build_deck.js",
+    "build:10": "node build_deck_10.js"
+  },
   "dependencies": {
     "pptxgenjs": "3.12.0",
     "react": "18.3.1",
