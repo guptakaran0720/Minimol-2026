@@ -69,22 +69,22 @@ export function Upload({ onUploaded }: { onUploaded: (r: UploadResult) => void }
         <span id="upload-title" className="drop-title">
           {busy ? (
             <>
-              Spreading
+              Loading
               <br />
               <span className="drop-name">{busy}</span>
             </>
           ) : (
-            <>
-              Drop a file
+            <span className="arc-blink">
+              Insert
               <br />
-              to spread it.
-            </>
+              file
+            </span>
           )}
         </span>
         <span className="drop-hint">
           {busy
             ? "Compressing, encrypting and placing each chunk on 3 laptops…"
-            : "Or click to choose. Compressed and encrypted here, then kept on 3 laptops. Same name again saves a new version and sends only changed chunks. Max 256 MiB."}
+            : "Drop it here or click. Compressed and encrypted on this laptop, then kept on 3 laptops. Same name again = new version; only changed chunks are sent. Max 256 MiB."}
         </span>
         {busy && <span className="progress" aria-hidden="true" />}
       </label>

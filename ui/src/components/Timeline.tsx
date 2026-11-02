@@ -9,7 +9,7 @@ export function Timeline({ data, wide = false }: { data: TimelineData | null; wi
     <section className={`tile tile-white tile-list ${wide ? "s7" : "s5"}`} aria-labelledby="timeline-title">
       <div className="tile-head">
         <h2 id="timeline-title" className="tile-title">
-          Cluster timeline
+          Battle log
         </h2>
         <span className="muted small">this laptop's view · newest first</span>
       </div>

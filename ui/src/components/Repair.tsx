@@ -5,7 +5,7 @@ import { clock } from "../identity";
 export function Repair({ repair, scrub }: { repair: Stats["repair"]; scrub: Timeline["scrub"] | null }) {
   const last = repair.last_round;
   return (
-    <section className="tile tile-white tile-list s5" aria-labelledby="repair-title">
+    <section className="tile tile-white tile-list s7" aria-labelledby="repair-title">
       <div className="tile-head">
         <h2 id="repair-title" className="tile-title">
           Self-repair

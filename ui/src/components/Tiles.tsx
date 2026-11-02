@@ -119,9 +119,9 @@ export function RepairTile({ repair }: { repair: Stats["repair"] }) {
 export function RecoveryTile({ username, codec }: { username: string | null; codec: string }) {
   const fake = codec.startsWith("FAKE");
   return (
-    <section className="tile tile-ink s4" aria-labelledby="recovery-tile">
+    <section className="tile tile-ink s5" aria-labelledby="recovery-tile">
       <h2 id="recovery-tile" className="tile-label">
-        Recovery
+        Continue?
       </h2>
       <p className="tile-statement">
         {username ? (
