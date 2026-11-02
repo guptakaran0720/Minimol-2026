@@ -4,11 +4,11 @@
 
 [![tests](https://github.com/guptakaran0720/Minimol-2026/actions/workflows/ci.yml/badge.svg)](https://github.com/guptakaran0720/Minimol-2026/actions/workflows/ci.yml)
 
-### ▶ Watch the 2:30 demo film
+### ▶ Watch the 2:13 demo film
 
 [![Minimol demo film: laptop-3 switched off, the cluster marks it dead and every file still downloads](docs/video/preview.gif)](docs/video/minimol-film.mp4)
 
-**[Watch the full film (MP4, 1080p, 2:30)](docs/video/minimol-film.mp4)**: upload, how a file travels, three copies, unreadable on peers, a laptop switched off, self-healing, smart routing, delta sync, recovery on another laptop, preview and delete. Every screen is the real dashboard on a live 3-node cluster.
+**[Watch the full film (MP4, 1080p, 2:13)](docs/video/minimol-film.mp4)**: upload, how a file travels, three copies, unreadable on peers, a laptop switched off, self-healing, smart routing, delta sync, recovery on another laptop, proof-of-storage audits, file logs by IP and MAC, lock and drain, preview, delete and log out. Every screen is the real dashboard on a live 3-node cluster.
 
 Files are **compressed and encrypted on your machine** before they leave it. Each piece is kept as **3 copies on 3 different laptops**, chosen by **measured, explainable routing**. When a laptop dies or a disk rots, **the survivors repair it on their own**. There is no central server: every node runs the same program.
 
@@ -397,7 +397,7 @@ python3 docs/img/make_charts.py
 
 ## 5. Dashboard and demonstration
 
-**Demo film:** [docs/video/minimol-film.mp4](docs/video/minimol-film.mp4) (2:30) walks through all of this on a live 3-node cluster.
+**Demo film:** [docs/video/minimol-film.mp4](docs/video/minimol-film.mp4) (2:13) walks through all of this on a live 3-node cluster.
 
 Every node serves a React dashboard at `http://localhost:8000/ui/`, polling every 2 s. It shows:
 - **Peers:** live state, slow tier, RTT, bandwidth, free space.
