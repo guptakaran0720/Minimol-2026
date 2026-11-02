@@ -1,6 +1,7 @@
 import type { ChunkMap, FileEntry, Peer } from "../api";
 import { PeerMark, type Look } from "../identity";
 
+/** The selected file as a block "well": one column per laptop, one row per chunk. */
 export function ChunkMapView({
   map,
   file,
@@ -14,10 +15,10 @@ export function ChunkMapView({
 }) {
   const columns = [...peers].sort((a, b) => a.node_id.localeCompare(b.node_id));
   return (
-    <section className="tile tile-white tile-list s7" aria-labelledby="map-title">
+    <section className="tile tile-white tile-list tile-well s4 r2" aria-labelledby="map-title">
       <div className="tile-head">
         <h2 id="map-title" className="tile-title">
-          Chunk map {file && <span className="tile-title-sub">· {file.name}</span>}
+          Playfield
         </h2>
         {map && <span className={`badge badge-${map.status}`}>{map.status}</span>}
       </div>
@@ -26,28 +27,29 @@ export function ChunkMapView({
       ) : (
         <>
           <p className="muted small">
-            Each row is one encrypted chunk. A filled cell is a copy on that laptop; the target is {map?.replication ?? 3} copies on
-            different laptops.
+            <b className="well-file">{file.name}</b> · each row is one encrypted chunk, each column a laptop. Target:{" "}
+            {map?.replication ?? 3} copies.
           </p>
           {!map ? (
             <p className="empty">Loading…</p>
           ) : (
-            <div className="table-wrap scroll">
-              <table className="chunkmap">
+            <div className="table-wrap scroll well-wrap">
+              <table className="chunkmap well">
                 <thead>
                   <tr>
-                    <th scope="col">#</th>
-                    <th scope="col">Chunk</th>
+                    <th scope="col">
+                      <span className="visually-hidden">Chunk</span>#
+                    </th>
                     {columns.map((p) => (
-                      <th key={p.node_id} scope="col" className="center">
+                      <th key={p.node_id} scope="col" className="center" title={p.node_id}>
                         <span className="col-head">
                           <PeerMark look={looks.get(p.node_id)} state={p.state} size="sm" />
-                          <span className="mono">{p.node_id}</span>
+                          <span className="mono">{p.node_id.replace(/^laptop-/, "L")}</span>
                         </span>
                       </th>
                     ))}
                     <th scope="col" className="num">
-                      Live copies
+                      <span className="visually-hidden">Live copies</span>HP
                     </th>
                   </tr>
                 </thead>
@@ -55,11 +57,10 @@ export function ChunkMapView({
                   {map.chunks.map((row) => {
                     const held = new Map(row.holders.map((h) => [h.node_id, h.state]));
                     return (
-                      <tr key={row.chunk_id}>
-                        <td className="muted">{row.index}</td>
-                        <td className="mono" title={row.chunk_id}>
-                          {row.chunk_id.slice(0, 10)}…
-                        </td>
+                      <tr key={row.chunk_id} title={row.chunk_id}>
+                        <th scope="row" className="muted">
+                          {row.index}
+                        </th>
                         {columns.map((p) => {
                           const state = held.get(p.node_id);
                           const tone = looks.get(p.node_id)?.tone ?? "blue";

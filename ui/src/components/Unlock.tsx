@@ -32,12 +32,14 @@ export function Unlock({ onDone }: { onDone: (msg: string) => void }) {
 
   return (
     <section className="tile tile-blue tile-unlock s5 r2" aria-labelledby="unlock-title">
-      <span className="pill pill-white">Locked</span>
+      <span className="pill pill-white">Player 1</span>
       <div className="unlock-body">
         <h2 id="unlock-title" className="drop-title">
-          Unlock
-          <br />
-          this laptop.
+          <span className="arc-blink">
+            Press
+            <br />
+            start
+          </span>
         </h2>
         <p className="drop-hint">
           Keys come from your username and passphrase. On a fresh laptop the same pair recovers every file from the peers.

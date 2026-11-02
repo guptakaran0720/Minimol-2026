@@ -26,10 +26,10 @@ export function Files({
 }) {
   const chunks = files.reduce((n, f) => n + f.chunks, 0);
   return (
-    <section className="tile tile-white tile-list s8" aria-labelledby="files-title">
+    <section className="tile tile-white tile-list s7" aria-labelledby="files-title">
       <div className="tile-head">
         <h2 id="files-title" className="tile-title">
-          Files
+          Inventory
         </h2>
         {unlocked && files.length > 0 && (
           <span className="muted small">

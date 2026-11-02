@@ -11,7 +11,8 @@ import { Preview } from "./components/Preview";
 import { Repair } from "./components/Repair";
 import { Timeline } from "./components/Timeline";
 import { Ticker, type TickerLine } from "./components/Ticker";
-import { HealthTile, LinkTile, PeersTile, RecoveryTile, RepairTile } from "./components/Tiles";
+import { RecoveryTile } from "./components/Tiles";
+import { Scoreboard } from "./components/Scoreboard";
 import { Unlock } from "./components/Unlock";
 import { Upload } from "./components/Upload";
 
@@ -101,38 +102,63 @@ export default function App() {
 
   return (
     <div className="page">
-      <header className="top">
-        <div className="brand">
-          <span className="wordmark">
-            chunky<span className="wordmark-dot">.</span>
+      <header className="arc-top">
+        <div className="arc-brand">
+          <span className="arc-logo" aria-hidden="true">
+            <span className="tone-blue" />
+            <span className="tone-red" />
+            <span className="tone-yellow" />
+            <span className="tone-green" />
           </span>
-          {s?.node_id && (
-            <span className="mono muted" title="The laptop serving this dashboard">
-              node {s.node_id}
-            </span>
-          )}
+          <span className="arc-word">
+            <span className="visually-hidden">Chunky</span>
+            {"CHUNKY".split("").map((c, i) => (
+              <span key={i} className={`arc-l arc-l${i}`} aria-hidden="true">
+                {c}
+              </span>
+            ))}
+          </span>
         </div>
-        <div className="top-meta">
+        {s && (
+          <dl className="arc-score">
+            <div>
+              <dt>1UP</dt>
+              <dd>{unlocked ? s.username : "LOCKED"}</dd>
+            </div>
+            <div>
+              <dt>STAGE</dt>
+              <dd>{s.node_id ?? "—"}</dd>
+            </div>
+            <div>
+              <dt>PLAYERS</dt>
+              <dd>
+                {peers.filter((p) => p.state === "alive").length}/{peers.length}
+              </dd>
+            </div>
+          </dl>
+        )}
+        <div className="arc-actions">
           {s && fakeCodec && <span className="tag tag-warn">DEV codec: not encrypted</span>}
-          {s && (
-            <span className={`status-pill ${unlocked ? "is-ok" : ""}`}>
-              <span className="status-dot" aria-hidden="true" />
-              {unlocked ? `unlocked · ${s.username}` : "locked"}
-            </span>
-          )}
           {s && unlocked && (
-            <button type="button" className="btn btn-quiet" onClick={logout} disabled={busy}>
+            <button type="button" className="btn arc-btn-red" onClick={logout} disabled={busy}>
               Log out
             </button>
           )}
         </div>
       </header>
 
-      <div className="hero">
+      {s && <Ticker status={status} items={feed} />}
+
+      <div className="hero arc-hero">
         <h1>
-          Live from the <span className="accent">cluster.</span>
+          Every file
+          <br />
+          gets 3 lives.
         </h1>
-        <p className="muted">Peer-to-peer storage · compressed and encrypted on this laptop · self-healing</p>
+        <p>
+          Chunks are compressed and encrypted on this laptop, then stacked on 3 different laptops. Lose one and the others
+          respawn its chunks.
+        </p>
       </div>
 
       {(stats.error || notice) && (
@@ -153,8 +179,6 @@ export default function App() {
         </div>
       )}
 
-      {s && <Ticker status={status} items={feed} />}
-
       {s ? (
         <main className="bento">
           {unlocked ? (
@@ -174,29 +198,13 @@ export default function App() {
               }}
             />
           )}
-          <PeersTile peers={peers} looks={looks} />
-          <HealthTile stats={s} unlocked={unlocked} />
-          <LinkTile peers={peers} looks={looks} />
-          <RepairTile repair={s.repair} />
-          <Files
-            files={files.data ?? []}
-            unlocked={unlocked}
-            selected={selected}
-            onSelect={setSelected}
-            onLogs={setLogsFor}
-            onPreview={setPreviewing}
-            onDelete={remove}
-          />
-          <RecoveryTile username={unlocked ? s.username : null} codec={s.codec} />
           {unlocked && (
             <ChunkMapView map={map.data} file={(files.data ?? []).find((f) => f.file_uuid === selected)} peers={peers} looks={looks} />
           )}
-          <Timeline data={timeline.data} wide={!unlocked} />
-          <Repair repair={s.repair} scrub={timeline.data?.scrub ?? null} />
+          <Scoreboard stats={s} peers={peers} unlocked={unlocked} map={unlocked ? map.data : null} wide={!unlocked} />
           <Peers
             peers={peers}
             looks={looks}
-            wide={!unlocked}
             drain={drain.data}
             onDrain={async (on) => {
               try {
@@ -207,6 +215,18 @@ export default function App() {
               }
             }}
           />
+          <Files
+            files={files.data ?? []}
+            unlocked={unlocked}
+            selected={selected}
+            onSelect={setSelected}
+            onLogs={setLogsFor}
+            onPreview={setPreviewing}
+            onDelete={remove}
+          />
+          <Timeline data={timeline.data} />
+          <Repair repair={s.repair} scrub={timeline.data?.scrub ?? null} />
+          <RecoveryTile username={unlocked ? s.username : null} codec={s.codec} />
         </main>
       ) : (
         !stats.error && <p className="loading">Connecting to this node…</p>
